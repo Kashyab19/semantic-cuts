@@ -1,5 +1,7 @@
 # Demo
 
-# WIP - Come back later or figure it out - it's simple. 
+[![Watch the video on YT](https://img.youtube.com/vi/-VDlq39URtY/maxresdefault.jpg)](https://youtu.be/-VDlq39URtY)
 
-[![Watch the video](https://img.youtube.com/vi/VIDEO_ID/0.jpg)](https://youtu.be/-VDlq39URtY)
+# Docs are a WIP
+
+Come back later or figure it out - it's simple.
