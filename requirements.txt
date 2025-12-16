@@ -1,0 +1,21 @@
+# --- Backend API (Producer) ---
+fastapi
+uvicorn
+pydantic
+
+# --- Infrastructure (Messaging & DB) ---
+kafka-python
+qdrant-client
+
+# --- Video Processing (Worker) ---
+opencv-python-headless
+yt-dlp
+Pillow
+
+# --- AI & Machine Learning ---
+torch
+transformers
+
+# --- Frontend (UI) ---
+streamlit
+watchdog
