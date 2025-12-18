@@ -44,3 +44,13 @@ services:
     depends_on:
       - redpanda
     restart: always
+
+  # 4. The Redis Cache
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  # --- NEW: The Shared Drive ---
+  shared_video_storage:
