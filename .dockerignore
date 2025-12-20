@@ -1,0 +1,8 @@
+# .dockerignore
+venv/
+__pycache__/
+.git/
+.env
+qdrant_data/
+redpanda_data/
+*.db

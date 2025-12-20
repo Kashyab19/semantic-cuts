@@ -1,56 +1,53 @@
 version: "3.8"
 
 services:
-  # 1. The Vector Database
+  inference:
+    build: .
+    container_name: inference_engine
+    command: python3 app/server.py
+    ports:
+      - "8001:8001"
+    volumes:
+      - .:/app
+    environment:
+      - CUDA_VISIBLE_DEVICES=0 # Optional: Only if you have NVIDIA GPU setup
+    restart: always
+
+  # --- INFRASTRUCTURE ---
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: vidsearch_qdrant
+    container_name: qdrant
     ports:
       - "6333:6333"
     volumes:
       - ./qdrant_data:/qdrant/storage
     restart: always
 
-  # 2. The Message Broker (Lightweight Kafka)
   redpanda:
     image: docker.redpanda.com/redpandadata/redpanda:latest
-    container_name: vidsearch_redpanda
+    container_name: redpanda
     command:
       - redpanda start
-      - --smp 1 # Use 1 CPU core (Development mode)
-      - --memory 1G # Limit RAM usage
+      - --smp 1
+      - --memory 1G
       - --reserve-memory 0M
       - --overprovisioned
       - --node-id 0
       - --check=false
-      # Listen on 9092 inside Docker, and 9094 for your local Python scripts
       - --kafka-addr PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:9094
       - --advertise-kafka-addr PLAINTEXT://redpanda:9092,OUTSIDE://localhost:9094
     ports:
-      - "9094:9094" # Connect here from your Python Producer/Consumer
-      - "8081:8081" # Schema Registry
+      - "9094:9094"
+      - "8081:8081"
     volumes:
       - ./redpanda_data:/var/lib/redpanda/data
     restart: always
 
-  # 3. The Kafka UI (Console)
-  redpanda-console:
-    image: docker.redpanda.com/redpandadata/console:latest
-    container_name: vidsearch_console
-    ports:
-      - "8080:8080" # Access UI at http://localhost:8080
-    environment:
-      KAFKA_BROKERS: redpanda:9092
-    depends_on:
-      - redpanda
-    restart: always
-
-  # 4. The Redis Cache
   redis:
     image: redis:alpine
+    container_name: redis
     ports:
       - "6379:6379"
 
 volumes:
-  # --- NEW: The Shared Drive ---
   shared_video_storage:
