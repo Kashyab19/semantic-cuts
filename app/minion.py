@@ -1,175 +1,190 @@
 import json
+import logging
 import os
 import uuid
 
 import cv2
 import redis
 import requests
-from app.scene_detect import SceneDetector
 from kafka import KafkaConsumer
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
+from app.audio import transcribe_chunk
+
+# --- INTERNAL IMPORTS ---
+from app.scene_detect import SceneDetector
+
 # --- CONFIG ---
 CHUNK_TOPIC = "chunk_processing"
-
-# The Minion now talks to the "Inference Service" instead of loading the model itself
-INFERENCE_URL = os.getenv("INFERENCE_API_URL", "http://localhost:8001/embed")
+# Use environment variable for flexibility, default to internal docker network alias
+INFERENCE_URL = os.getenv("INFERENCE_API_URL", "http://api:8000/embed")
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9094")
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
-QDRANT_HOST = "localhost"
-QDRANT_PORT = 6333
-COLLECTION_NAME = "video_frames"
+QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 
-# --- INFRASTRUCTURE ---
-print(f"Minion reporting for duty. Inference Server: {INFERENCE_URL}")
+# --- LOGGING SETUP ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()],
+)
+logger = logging.getLogger("Minion")
 
-qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
-redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+logger.info(f"Minion reporting. Brain at: {INFERENCE_URL}")
 
-# Ensure Collection Exists
-if not qdrant.collection_exists(COLLECTION_NAME):
-    qdrant.create_collection(
-        collection_name=COLLECTION_NAME,
-        vectors_config=VectorParams(size=512, distance=Distance.COSINE),
-    )
-print("Ready to work.")
+# --- INFRASTRUCTURE CONNECTIONS ---
+try:
+    qdrant = QdrantClient(host=QDRANT_HOST, port=6333)
+    redis_client = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
+except Exception as e:
+    logger.critical(f"Failed to connect to infrastructure: {e}")
+    exit(1)
+
+# Ensure Collections
+try:
+    for name, dim in [("video_frames", 512), ("audio_transcripts", 384)]:
+        if not qdrant.collection_exists(name):
+            qdrant.create_collection(
+                name, vectors_config=VectorParams(size=dim, distance=Distance.COSINE)
+            )
+            logger.info(f"Created collection: {name}")
+except Exception as e:
+    logger.error(f"Failed to ensure collections: {e}")
 
 
-def get_embedding_from_server(frame):
+def get_embedding(frame):
     """
-    Sends the raw image frame to the Inference API (server.py)
-    and receives the 512-float vector.
+    Sends a frame to the API for embedding.
     """
-    # Encode frame to JPEG in memory
     success, buffer = cv2.imencode(".jpg", frame)
     if not success:
         return None
-
     try:
-        response = requests.post(INFERENCE_URL, files={"file": buffer.tobytes()})
-        if response.status_code == 200:
-            return response.json()["vector"]
+        res = requests.post(INFERENCE_URL, files={"file": buffer.tobytes()})
+        if res.status_code == 200:
+            return res.json()["vector"]
         else:
-            print(f"Error from Inference Server: {response.text}")
+            logger.error(f"Embedding failed: {res.status_code} - {res.text}")
             return None
     except Exception as e:
-        print(f"Connection Error to Inference Server: {e}")
+        logger.error(f"Embedding API Error: {e}")
         return None
 
 
 def process_chunk(task):
     job_id = task["job_id"]
-    video_path = task["video_path"]
-    start_time = task["start_time"]
-    end_time = task["end_time"]
+    video_path = task["video_path"]  # Uses /app/assets/...
     chunk_index = task["chunk_index"]
 
-    print(f"Processing Chunk #{chunk_index} ({start_time}s - {end_time}s)")
+    logger.info(f"--- Processing Chunk #{chunk_index} for Job {job_id} ---")
 
-    # Instantiate Detector FRESH for every chunk
-    detector = SceneDetector(threshold=0.7)
+    # 1. GHOST FILE CHECK
+    if not os.path.exists(video_path):
+        logger.critical(f"FILE MISSING: Worker cannot see {video_path}")
+        # List directory to help debug volume mounting issues
+        base_dir = os.path.dirname(video_path)
+        if os.path.exists(base_dir):
+            logger.info(f"Contents of {base_dir}: {os.listdir(base_dir)}")
+        else:
+            logger.error(f"Base directory {base_dir} does not exist!")
+        return
 
-    # --- STUTTER FIX: DEBOUNCE LOGIC ---
-    # We will ignore any cuts that happen less than 1.0 second after the previous one
-    last_cut_timestamp = -1.0
-    MIN_SCENE_DURATION = 1.0
+    # 2. VISUAL PROCESSING
+    try:
+        # Lower threshold to 0.6 to be more sensitive
+        detector = SceneDetector(threshold=0.6)
+        cap = cv2.VideoCapture(video_path)
 
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps == 0:
+            logger.error(f"Video FPS is 0. Corrupt file? {video_path}")
+            cap.release()
+            return
 
-    # JUMP to the start time
-    start_frame = int(start_time * fps)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        # Jump to start of chunk
+        start_frame = int(task["start_time"] * fps)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
-    points_to_upload = []
-    current_frame = start_frame
+        visual_points = []
+        current_frame = start_frame
+        max_frame = int(task["end_time"] * fps)
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
+        logger.info(f"Scanning frames {start_frame} to {max_frame}...")
 
-        timestamp = current_frame / fps
+        while cap.isOpened() and current_frame < max_frame:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        # STOP if we reached the end of our assigned chunk
-        if timestamp > end_time:
-            break
+            if detector.process_frame(frame):
+                timestamp = current_frame / fps
+                logger.info(f"Cut detected at {timestamp:.2f}s")
 
-        # 1. COOLDOWN CHECK (Fixes the "stutter" bursts)
-        # If we just cut recently, skip the heavy processing
-        if (
-            last_cut_timestamp != -1.0
-            and (timestamp - last_cut_timestamp) < MIN_SCENE_DURATION
-        ):
-            current_frame += 1
-            continue
-
-        # 2. SCENE DETECTION
-        is_new_scene = detector.process_frame(frame)
-
-        if is_new_scene:
-            # 3. REMOTE INFERENCE (Call the separate Brain service)
-            vector = get_embedding_from_server(frame)
-
-            if vector:
-                points_to_upload.append(
-                    PointStruct(
-                        id=str(uuid.uuid4()),
-                        vector=vector,
-                        payload={
-                            "video_id": job_id,
-                            "url": task.get("url", "local_file"),
-                            "timestamp": timestamp,
-                            "second_formatted": f"{int(timestamp // 60)}:{int(timestamp % 60):02d}",
-                            "type": "scene_cut",
-                        },
+                vec = get_embedding(frame)
+                if vec:
+                    visual_points.append(
+                        PointStruct(
+                            id=str(uuid.uuid4()),
+                            vector=vec,
+                            payload={
+                                "video_id": job_id,
+                                "timestamp": timestamp,
+                                "type": "scene_cut",
+                            },
+                        )
                     )
-                )
-                print(f"Scene Change at {timestamp:.1f}s -> Encoded.")
+            current_frame += 1
+        cap.release()
 
-                # Update the last cut time so we enforce the cooldown
-                last_cut_timestamp = timestamp
+        if visual_points:
+            qdrant.upsert("video_frames", visual_points)
+            logger.info(f"Saved {len(visual_points)} visual vectors.")
+        else:
+            logger.info("No scene cuts detected in this chunk.")
 
-        current_frame += 1
+    except Exception as e:
+        logger.error(f"Visual processing failed: {e}")
 
-    cap.release()
+    # 3. AUDIO PROCESSING
+    try:
+        audio_data = transcribe_chunk(
+            video_path, job_id, task["start_time"], task["end_time"]
+        )
+        if audio_data:
+            points = [
+                PointStruct(id=p["id"], vector=p["vector"], payload=p["payload"])
+                for p in audio_data
+            ]
+            qdrant.upsert("audio_transcripts", points)
+            logger.info(f"Saved {len(points)} audio segments.")
+        else:
+            logger.info("No audio data extracted.")
 
-    # Upload to DB
-    if points_to_upload:
-        qdrant.upsert(collection_name=COLLECTION_NAME, points=points_to_upload)
-        print(f"Saved {len(points_to_upload)} vectors for Chunk #{chunk_index}.")
-    else:
-        print(f"No scenes detected in Chunk #{chunk_index} (Static video?)")
+    except Exception as e:
+        logger.error(f"Audio processing failed: {e}")
 
-    # --- THE REDUCE STEP ---
-    redis_key = f"job:{job_id}:pending"
-    # Force cast to int for type safety
-    remaining = int(redis_client.decr(redis_key))
-
-    if remaining <= 0:
-        print(f"JOB {job_id} COMPLETE! (I was the last one)")
-    else:
-        print(f"There are {remaining} chunks left for other minions.")
+    # 4. REDUCE (Track Completion)
+    try:
+        remaining = redis_client.decr(f"job:{job_id}:pending")
+        if remaining <= 0:
+            logger.info(f"JOB {job_id} COMPLETE!")
+            # Optional: Update status in DB to 'completed' here
+    except Exception as e:
+        logger.error(f"Redis update failed: {e}")
 
 
-def start_minion():
-    print(f"Minion listening on '{CHUNK_TOPIC}'...")
+def start():
+    logger.info("Waiting for tasks...")
     consumer = KafkaConsumer(
         CHUNK_TOPIC,
         bootstrap_servers=KAFKA_BROKER,
         value_deserializer=lambda m: json.loads(m.decode("utf-8")),
         group_id="minion_group",
-        auto_offset_reset="latest",
     )
-
-    for message in consumer:
-        try:
-            process_chunk(message.value)
-        except Exception as e:
-            print(f"Error processing chunk: {e}")
+    for msg in consumer:
+        process_chunk(msg.value)
 
 
 if __name__ == "__main__":
-    start_minion()
+    start()

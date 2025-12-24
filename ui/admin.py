@@ -20,7 +20,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="VidSearch Admin", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="VidSearch Admin", layout="wide")
 API_URL = "http://localhost:8000/video"
 
 st.title("Admin Console")
@@ -45,7 +45,7 @@ with col1:
                 API_URL, json={"url": video_url, "user_id": user_id}
             )
             if response.status_code == 200:
-                st.toast("Job Queued Successfully!", icon="✅")
+                st.toast("Job Queued Successfully!")
                 time.sleep(1)
                 st.rerun()
             else:

@@ -2,307 +2,184 @@ import io
 import json
 import logging
 import os
-import tempfile
+import uuid
+from typing import List, Optional
 
-import cv2
-import numpy as np
 import redis
 import torch
-import uvicorn
-from fastapi import BackgroundTasks, FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastembed import TextEmbedding
 from kafka import KafkaProducer
 from PIL import Image
+from pydantic import BaseModel
 from qdrant_client import QdrantClient
-from qdrant_client.http import models
 from transformers import CLIPModel, CLIPProcessor
 
-# Configure logging
+from app import database
+
+# --- CONFIG ---
+# Detect if running in Docker or Local
+IN_DOCKER = os.path.exists("/.dockerenv")
+
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9094")
+QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+
+INGEST_TOPIC = "video_ingestion"
+AUDIO_COLLECTION = "audio_transcripts"
+VIDEO_COLLECTION = "video_frames"
+
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("API")
 
-app = FastAPI(title="Semantic Cuts - Inference Engine")
+app = FastAPI(title="Semantic Cuts")
 
-# --- CONFIGURATION ---
-
-# Detect if running inside Docker or Local
-IN_DOCKER = os.getenv("KUBERNETES_SERVICE_HOST") or os.path.exists("/.dockerenv")
-
-# Define Hostnames
-QDRANT_HOST = "qdrant" if IN_DOCKER else "localhost"
-REDIS_HOST = "redis" if IN_DOCKER else "localhost"
-REDPANDA_HOST = "redpanda" if IN_DOCKER else "localhost"
-REDPANDA_PORT = 9092 if IN_DOCKER else 9094
-
-COLLECTION_NAME = "video_frames"
-VECTOR_SIZE = 512
-
-# --- INFRASTRUCTURE CONNECTIONS ---
-
-# Redis
-try:
-    redis_client = redis.Redis(host=REDIS_HOST, port=6379, db=0)
-    redis_client.ping()
-    logger.info(f"Redis connected at {REDIS_HOST}:6379")
-except Exception as e:
-    logger.error(f"Redis connection failed: {e}")
-    redis_client = None
-
-# Qdrant
-try:
-    qdrant_client = QdrantClient(host=QDRANT_HOST, port=6333)
-    logger.info(f"Qdrant connected at {QDRANT_HOST}:6333")
-except Exception as e:
-    logger.error(f"Qdrant connection failed: {e}")
-    qdrant_client = None
-
-# Redpanda (Kafka)
+# --- INFRASTRUCTURE ---
 try:
     producer = KafkaProducer(
-        bootstrap_servers=f"{REDPANDA_HOST}:{REDPANDA_PORT}",
+        bootstrap_servers=KAFKA_BROKER,
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+        acks="all",
     )
-    logger.info(f"Redpanda connected at {REDPANDA_HOST}:{REDPANDA_PORT}")
+    logger.info(f"Kafka connected at {KAFKA_BROKER}")
 except Exception as e:
-    logger.error(f"Redpanda connection failed: {e}")
+    logger.critical(f"Kafka Failed: {e}")
     producer = None
 
-# --- ML MODEL ---
+try:
+    qdrant = QdrantClient(host=QDRANT_HOST, port=6333)
+    logger.info(f"Qdrant connected at {QDRANT_HOST}")
+except Exception as e:
+    logger.critical(f"Qdrant Failed: {e}")
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-logger.info(f"Loading CLIP model on {DEVICE}...")
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(DEVICE)
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-logger.info("Model loaded successfully.")
+redis_client = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
 
+# --- MODELS ---
+DEVICE = "cpu"  # Force CPU to avoid CUDA complications in Docker for now
+logger.info(f"Loading CLIP on {DEVICE}...")
+clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(DEVICE)
+clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
-@app.on_event("startup")
-def startup_event():
-    """Initialize Qdrant collection on server startup."""
-    if not qdrant_client:
-        logger.warning("Qdrant not connected, skipping initialization.")
-        return
-
-    try:
-        if not qdrant_client.collection_exists(COLLECTION_NAME):
-            logger.info(f"Creating collection: {COLLECTION_NAME}")
-            qdrant_client.create_collection(
-                collection_name=COLLECTION_NAME,
-                vectors_config=models.VectorParams(
-                    size=VECTOR_SIZE, distance=models.Distance.COSINE
-                ),
-            )
-        else:
-            logger.info(f"Collection {COLLECTION_NAME} already exists.")
-    except Exception as e:
-        logger.error(f"Failed to initialize Qdrant: {e}")
+logger.info("Loading Text Embedding...")
+text_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
 
-def process_video(file_path: str, video_id: str):
-    """
-    Background task: Extracts frames, embeds them, and saves to Qdrant.
-    TODO: Incorporate smart scene detection from yesterday to prevent memory usage.
-    """
-    logger.info(f"Starting processing for video: {video_id}")
+class VideoRequest(BaseModel):
+    url: str
+    title: Optional[str] = "Untitled"
 
-    cap = cv2.VideoCapture(file_path)
-    if not cap.isOpened():
-        logger.error(f"Could not open video file: {file_path}")
-        return
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 0:
-        fps = 30  # Fallback if FPS detection fails
-
-    frame_interval = int(fps)  # Process 1 frame per second
-
-    current_frame = 0
-    points_to_upload = []
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        # Only process every Nth frame
-        if current_frame % frame_interval == 0:
-            try:
-                # Convert BGR (OpenCV) to RGB (PIL)
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                pil_image = Image.fromarray(rgb_frame)
-
-                # Inference
-                inputs = processor(
-                    images=pil_image, return_tensors="pt", padding=True
-                ).to(DEVICE)
-                with torch.no_grad():
-                    outputs = model.get_image_features(**inputs)
-
-                # Normalize
-                embedding = outputs[0].cpu().numpy()
-                norm = np.linalg.norm(embedding)
-                if norm > 0:
-                    embedding = embedding / norm
-
-                # Prepare Qdrant Point
-                timestamp = current_frame / fps
-                point_id = f"{video_id}_{int(timestamp)}"
-
-                # Create a point UUID deterministically if needed, or let Qdrant handle it if using integers.
-                # Here we use a string ID logic or hash it if Qdrant requires UUIDs.
-                # For simplicity in this example, we assume Qdrant supports string IDs or we use a UUID helper.
-                import uuid
-
-                final_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, point_id))
-
-                points_to_upload.append(
-                    models.PointStruct(
-                        id=final_id,
-                        vector=embedding.tolist(),
-                        payload={
-                            "video_id": video_id,
-                            "timestamp": timestamp,
-                            "frame_index": current_frame,
-                        },
-                    )
-                )
-            except Exception as e:
-                logger.error(f"Error processing frame {current_frame}: {e}")
-
-        current_frame += 1
-
-    cap.release()
-
-    # Bulk upload to Qdrant
-    if points_to_upload and qdrant_client:
-        try:
-            qdrant_client.upsert(
-                collection_name=COLLECTION_NAME, points=points_to_upload
-            )
-            logger.info(
-                f"Uploaded {len(points_to_upload)} frames to Qdrant for {video_id}."
-            )
-        except Exception as e:
-            logger.error(f"Failed to upload to Qdrant: {e}")
-
-    # Cleanup temp file
-    try:
-        os.remove(file_path)
-    except OSError:
-        pass
-
-    # Notify Redpanda
-    if producer:
-        try:
-            producer.send(
-                "video_processed",
-                {
-                    "video_id": video_id,
-                    "status": "completed",
-                    "frames_processed": len(points_to_upload),
-                },
-            )
-            producer.flush()
-        except Exception as e:
-            logger.error(f"Failed to send Kafka message: {e}")
-
-    logger.info(f"Finished processing video: {video_id}")
+class SearchResult(BaseModel):
+    video_id: str
+    timestamp: float
+    end_timestamp: Optional[float] = None
+    text: Optional[str] = None
+    score: float
+    type: str
 
 
 @app.get("/health")
 def health():
-    return {
-        "status": "operational",
-        "device": DEVICE,
-        "infrastructure": {
-            "qdrant": "connected" if qdrant_client else "disconnected",
-            "redpanda": "connected" if producer else "disconnected",
-            "redis": "connected" if redis_client else "disconnected",
-        },
+    return {"status": "ok"}
+
+
+@app.post("/video")
+async def queue_video(payload: VideoRequest):
+    if not producer:
+        raise HTTPException(status_code=503, detail="Kafka unavailable")
+
+    job_id = uuid.uuid4().hex
+    database.add_video(job_id, payload.url, payload.title)
+
+    task_payload = {
+        "job_id": job_id,
+        "url": payload.url,
+        "title": payload.title,
+        "status": "queued",
     }
 
+    producer.send(INGEST_TOPIC, task_payload)
+    producer.flush()
+    redis_client.set(f"job:{job_id}:status", "queued")
 
-@app.post("/ingest")
-async def ingest_video(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
-    """
-    Uploads a video, saves it temporarily, and triggers background processing.
-    """
+    logger.info(f"Queued Job {job_id}")
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.post("/embed")
+async def embed_image(file: UploadFile = File(...)):
     try:
-        # Create a temp file to store the upload
-        suffix = os.path.splitext(file.filename)[1]
-        if not suffix:
-            suffix = ".mp4"
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            content = await file.read()
-            tmp.write(content)
-            tmp_path = tmp.name
-
-        video_id = os.path.splitext(file.filename)[0]
-
-        # Trigger background task
-        background_tasks.add_task(process_video, tmp_path, video_id)
-
-        return {
-            "status": "processing_started",
-            "video_id": video_id,
-            "message": "Video is being processed in the background.",
-        }
-
-    except Exception as e:
-        logger.error(f"Ingest failed: {e}")
-        return {"error": str(e)}
-
-
-@app.get("/search")
-def search_video(query: str, limit: int = 5):
-    """
-    Search functionality using the modern Qdrant 'query_points' API.
-    """
-    if not qdrant_client:
-        return {"error": "Qdrant is not connected"}
-
-    try:
-        # 1. Vectorize Text (Using your Torch logic)
-        inputs = processor(text=[query], return_tensors="pt", padding=True).to(DEVICE)
+        content = await file.read()
+        image = Image.open(io.BytesIO(content))
+        inputs = clip_processor(images=image, return_tensors="pt").to(DEVICE)
         with torch.no_grad():
-            text_features = model.get_text_features(**inputs)
+            outputs = clip_model.get_image_features(**inputs)
+        vector = outputs / outputs.norm(p=2, dim=-1, keepdim=True)
+        return {"vector": vector.cpu().numpy().tolist()[0]}
+    except Exception as e:
+        logger.error(f"Embedding failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-        # 2. Normalize (Using Torch as per your snippet)
-        text_vector = text_features[0]
-        text_vector = text_vector / text_vector.norm(p=2, dim=-1, keepdim=True)
-        text_vector_list = text_vector.cpu().numpy().tolist()
 
-        # 3. Search Qdrant (Using query_points)
-        search_result = qdrant_client.query_points(
-            collection_name=COLLECTION_NAME,
-            query=text_vector_list,
+@app.get("/search", response_model=List[SearchResult])
+async def search(query: str, limit: int = 5):
+    results = []
+    logger.info(f"Searching for: {query}")
+
+    # 1. AUDIO SEARCH
+    try:
+        text_vec = list(text_model.embed([query]))[0]
+        audio_hits = qdrant.query_points(
+            collection_name=AUDIO_COLLECTION,
+            query=text_vec,
             limit=limit,
             with_payload=True,
-        )
-
-        # Access points from the result
-        hits = search_result.points
-
-        # 4. Format Results
-        results = []
-        for hit in hits:
-            payload = hit.payload or {}
+        ).points
+        for hit in audio_hits:
             results.append(
                 {
+                    "video_id": hit.payload.get("video_id"),
+                    "timestamp": hit.payload.get("timestamp", 0.0),
+                    "end_timestamp": hit.payload.get("end_timestamp"),
+                    "text": hit.payload.get("text"),
                     "score": hit.score,
-                    "video_id": payload.get("video_id", "unknown"),
-                    # We save 'timestamp' as a float (e.g., 12.0), so we read that back
-                    "timestamp": payload.get("timestamp", 0.0),
-                    "frame_index": payload.get("frame_index"),
+                    "type": "audio",
                 }
             )
-
-        return {"query": query, "results": results}
-
     except Exception as e:
-        logger.error(f"Search failed: {e}")
-        return {"error": str(e)}
+        logger.error(f"Audio Search Failed: {e}")
+        # Don't crash, just log
 
+    # 2. VISUAL SEARCH
+    try:
+        inputs = clip_processor(text=[query], return_tensors="pt", padding=True).to(
+            DEVICE
+        )
+        with torch.no_grad():
+            text_features = clip_model.get_text_features(**inputs)
+        clip_vec = text_features / text_features.norm(p=2, dim=-1, keepdim=True)
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+        video_hits = qdrant.query_points(
+            collection_name=VIDEO_COLLECTION,
+            query=clip_vec.cpu().numpy().tolist()[0],
+            limit=limit,
+            with_payload=True,
+        ).points
+
+        for hit in video_hits:
+            results.append(
+                {
+                    "video_id": hit.payload.get("video_id"),
+                    "timestamp": hit.payload.get("timestamp", 0.0),
+                    "text": f"[Visual] {query}",
+                    "score": hit.score,
+                    "type": "visual",
+                }
+            )
+    except Exception as e:
+        logger.error(f"Visual Search Failed: {e}")
+        # Don't crash, just log
+
+    # Sort by score
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results[:limit]

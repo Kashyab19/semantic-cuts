@@ -1,11 +1,18 @@
 import datetime
+import os
 import sqlite3
 
-DB_NAME = "vidsearch.db"
+# CRITICAL: Point to the shared volume directory
+# If we don't do this, API and Manager will have different databases!
+DB_FOLDER = "/app/assets"
+DB_NAME = os.path.join(DB_FOLDER, "vidsearch.db")
 
 
 def init_db():
     """Creates the table if it doesn't exist"""
+    # Ensure the directory exists first
+    os.makedirs(DB_FOLDER, exist_ok=True)
+
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("""
@@ -27,7 +34,7 @@ def add_video(job_id, url, title="Unknown Video"):
     c = conn.cursor()
     c.execute(
         "INSERT INTO videos (id, title, url, status, created_at) VALUES (?, ?, ?, ?, ?)",
-        (job_id, title, url, "processing", datetime.datetime.now()),
+        (job_id, title, url, "queued", datetime.datetime.now()),
     )
     conn.commit()
     conn.close()
@@ -43,12 +50,11 @@ def update_status(job_id, status):
 
 def get_all_videos():
     conn = sqlite3.connect(DB_NAME)
-    # Return results as a dictionary-like object
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM videos ORDER BY created_at DESC")
     return c.fetchall()
 
 
-# Initialize immediately when this module is imported
+# Initialize immediately
 init_db()

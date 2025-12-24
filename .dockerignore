@@ -1,8 +1,8 @@
 # .dockerignore
-venv/
-__pycache__/
-.git/
-.env
+assets/
 qdrant_data/
 redpanda_data/
-*.db
+__pycache__/
+*.pyc
+.git/
+.env
