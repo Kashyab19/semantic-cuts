@@ -1,25 +1,32 @@
-# Use a slim Python image (lightweight and fast)
-# If you need GPU support later, change this to an nvidia/cuda image or pytorch/pytorch
-FROM python:3.10-slim
+# Use Python 3.12 to match your project requirements
+FROM python:3.12-slim
 
-# Set the working directory to match the volume mount in your compose file
-WORKDIR /app
-
-# Install system dependencies (often needed for AI/Inference libraries like OpenCV or numpy)
+# 1. Install System Dependencies
 RUN apt-get update && apt-get install -y \
-    build-essential \
     libgl1 \
     libglib2.0-0 \
+    ffmpeg \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first to leverage Docker caching
-COPY requirements.txt .
+# 2. Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# 3. Set up the application
+WORKDIR /app
 
-# Copy the rest of the code
+# 4. Install Dependencies
+# Only copy pyproject.toml (since we deleted uv.lock)
+COPY pyproject.toml ./
+
+# Run sync WITHOUT --frozen (this resolves dependencies fresh)
+RUN uv sync
+
+# CRITICAL: Add the virtual environment to the PATH
+ENV PATH="/app/.venv/bin:$PATH"
+
+# 5. Copy the Code
 COPY . .
 
-# This CMD is a fallback; your docker-compose 'command' overrides this.
-CMD ["python3", "app/server.py"]
+# 6. Default Command
+CMD ["uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "8000"]

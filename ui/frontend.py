@@ -7,7 +7,7 @@ from qdrant_client import QdrantClient
 from transformers import CLIPModel, CLIPProcessor
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Semantic Cuts", page_icon="🎬", layout="wide")
+st.set_page_config(page_title="Semantic Cuts", layout="wide")
 
 QDRANT_HOST = "localhost"
 QDRANT_PORT = 6333
@@ -45,7 +45,7 @@ with st.sidebar:
                 )
 
                 if response.status_code == 200:
-                    st.success(" Job Queued!")
+                    st.success("Job Queued!")
                     st.info(f"Job ID: {response.json().get('job_id')}")
                     st.markdown("Check your **Worker Terminal** to see progress.")
                 else:
@@ -59,13 +59,13 @@ with st.sidebar:
     try:
         # Simple health check
         info = client.get_collection(COLLECTION_NAME)
-        st.success(f" Database Connected")
+        st.success(f"Database Connected")
         st.caption(f"Indexed Vectors: {info.points_count}")
     except:
         st.error("Qdrant Offline")
 
 # --- MAIN PAGE: SEARCH ---
-st.title(" Semantic Cuts")
+st.title("Semantic Cuts")
 st.markdown("### Search your video library with AI")
 
 query = st.text_input(
