@@ -1,9 +1,4 @@
-version: "3.8"
-
 services:
-  # ----------------------------------------------------------------
-  # 1. API GATEWAY (server.py)
-  # ----------------------------------------------------------------
   api:
     build: .
     container_name: semantic_api
@@ -18,15 +13,14 @@ services:
       - KAFKA_BROKER=redpanda:9092
       - REDIS_HOST=redis
       - QDRANT_HOST=qdrant
+      - DATABASE_URL=postgresql://user:password@postgres:5432/semantic_cuts
     depends_on:
       - redpanda
       - redis
       - qdrant
+      - postgres
     restart: always
 
-  # ----------------------------------------------------------------
-  # 2. ORCHESTRATOR (manager.py)
-  # ----------------------------------------------------------------
   orchestrator:
     build: .
     container_name: semantic_orchestrator
@@ -38,13 +32,12 @@ services:
     environment:
       - KAFKA_BROKER=redpanda:9092
       - REDIS_HOST=redis
+      - DATABASE_URL=postgresql://user:password@postgres:5432/semantic_cuts
     depends_on:
       - redpanda
+      - postgres
     restart: always
 
-  # ----------------------------------------------------------------
-  # 3. WORKER (minion.py)
-  # ----------------------------------------------------------------
   worker:
     build: .
     container_name: semantic_worker
@@ -58,9 +51,11 @@ services:
       - REDIS_HOST=redis
       - QDRANT_HOST=qdrant
       - INFERENCE_API_URL=http://api:8000/embed
+      - DATABASE_URL=postgresql://user:password@postgres:5432/semantic_cuts
     depends_on:
       - api
       - orchestrator
+      - postgres
     restart: always
 
   # ----------------------------------------------------------------
@@ -101,6 +96,21 @@ services:
       - "6379:6379"
     restart: always
 
+  postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: semantic_cuts
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # REMOVED: networks: - app_network (so it uses the default network)
+
 # Define the shared volume name
 volumes:
+  postgres_data:
+    driver: local
   shared_data:

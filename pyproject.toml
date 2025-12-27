@@ -19,5 +19,7 @@ dependencies = [
     "fastembed>=0.2.6",
     "faster-whisper>=1.0.1",      # The one you are missing now
     "ffmpeg-python>=0.2.0",       # The one you missed before
-    "yt-dlp>=2024.4.9"
+    "yt-dlp>=2024.4.9",
+    "sqlalchemy>=2.0.45",
+    "psycopg2-binary>=2.9.11",
 ]

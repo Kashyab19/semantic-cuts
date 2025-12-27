@@ -7,7 +7,7 @@ from typing import List, Optional
 
 import redis
 import torch
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastembed import TextEmbedding
 from kafka import KafkaProducer
 from PIL import Image
@@ -16,6 +16,7 @@ from qdrant_client import QdrantClient
 from transformers import CLIPModel, CLIPProcessor
 
 from app import database
+from app.algo.index import deduplicate_results, reciprocal_rank_fusion
 
 # --- CONFIG ---
 # Detect if running in Docker or Local
@@ -34,7 +35,7 @@ logger = logging.getLogger("API")
 
 app = FastAPI(title="Semantic Cuts")
 
-# --- INFRASTRUCTURE ---
+
 try:
     producer = KafkaProducer(
         bootstrap_servers=KAFKA_BROKER,
@@ -84,17 +85,24 @@ def health():
 
 
 @app.post("/video")
-async def queue_video(payload: VideoRequest):
+async def queue_video(
+    payload: VideoRequest,
+    x_user_id: str = Header(default="demo_user", alias="x-user-id"),
+):
     if not producer:
-        raise HTTPException(status_code=503, detail="Kafka unavailable")
+        raise HTTPException(status_code=503, detail="Kafka Instance Unavailable")
+
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="User ID is missing")
 
     job_id = uuid.uuid4().hex
-    database.add_video(job_id, payload.url, payload.title)
+    # database.add_video(job_id, payload.url, payload.title)
 
     task_payload = {
         "job_id": job_id,
         "url": payload.url,
         "title": payload.title,
+        "user_id": x_user_id,
         "status": "queued",
     }
 
@@ -122,9 +130,9 @@ async def embed_image(file: UploadFile = File(...)):
 
 
 @app.get("/search", response_model=List[SearchResult])
-async def search(query: str, limit: int = 5):
-    results = []
-    logger.info(f"Searching for: {query}")
+async def search(query: str, limit: int = 10):
+    audio_results = []
+    video_results = []
 
     # 1. AUDIO SEARCH
     try:
@@ -135,20 +143,19 @@ async def search(query: str, limit: int = 5):
             limit=limit,
             with_payload=True,
         ).points
+
         for hit in audio_hits:
-            results.append(
+            audio_results.append(
                 {
                     "video_id": hit.payload.get("video_id"),
-                    "timestamp": hit.payload.get("timestamp", 0.0),
-                    "end_timestamp": hit.payload.get("end_timestamp"),
+                    "timestamp": hit.payload.get("timestamp"),
                     "text": hit.payload.get("text"),
-                    "score": hit.score,
                     "type": "audio",
+                    "raw_score": hit.score,
                 }
             )
     except Exception as e:
         logger.error(f"Audio Search Failed: {e}")
-        # Don't crash, just log
 
     # 2. VISUAL SEARCH
     try:
@@ -167,19 +174,23 @@ async def search(query: str, limit: int = 5):
         ).points
 
         for hit in video_hits:
-            results.append(
+            video_results.append(
                 {
                     "video_id": hit.payload.get("video_id"),
-                    "timestamp": hit.payload.get("timestamp", 0.0),
-                    "text": f"[Visual] {query}",
-                    "score": hit.score,
+                    "timestamp": hit.payload.get("timestamp"),
+                    "text": "[Visual Match]",
                     "type": "visual",
+                    "raw_score": hit.score,
                 }
             )
     except Exception as e:
         logger.error(f"Visual Search Failed: {e}")
-        # Don't crash, just log
 
-    # Sort by score
-    results.sort(key=lambda x: x["score"], reverse=True)
-    return results[:limit]
+    # 3. MERGE & CLEAN
+    # Rank them fairly
+    fused_results = reciprocal_rank_fusion(audio_results, video_results)
+
+    # Remove clusters of results (e.g. 10s, 11s, 12s -> just 10s)
+    final_results = deduplicate_results(fused_results)
+
+    return final_results[:limit]

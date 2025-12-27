@@ -10,35 +10,31 @@ from kafka import KafkaConsumer
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
+# --- INTERNAL IMPORTS ---
 from app.audio import transcribe_chunk
 
-# --- INTERNAL IMPORTS ---
-from app.scene_detect import SceneDetector
+# CHANGE: Importing your new isolated class
+from app.utils.structural_scene_detector import StructuralSceneDetector
 
 # --- CONFIG ---
 CHUNK_TOPIC = "chunk_processing"
-# Use environment variable for flexibility, default to internal docker network alias
 INFERENCE_URL = os.getenv("INFERENCE_API_URL", "http://api:8000/embed")
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9094")
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 
-# --- LOGGING SETUP ---
+# --- LOGGING ---
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()],
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger("Minion")
 
-logger.info(f"Minion reporting. Brain at: {INFERENCE_URL}")
-
-# --- INFRASTRUCTURE CONNECTIONS ---
+# --- INFRASTRUCTURE ---
 try:
     qdrant = QdrantClient(host=QDRANT_HOST, port=6333)
     redis_client = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
 except Exception as e:
-    logger.critical(f"Failed to connect to infrastructure: {e}")
+    logger.critical(f"Infra connection failed: {e}")
     exit(1)
 
 # Ensure Collections
@@ -48,78 +44,65 @@ try:
             qdrant.create_collection(
                 name, vectors_config=VectorParams(size=dim, distance=Distance.COSINE)
             )
-            logger.info(f"Created collection: {name}")
 except Exception as e:
-    logger.error(f"Failed to ensure collections: {e}")
+    logger.error(f"Collection check failed: {e}")
 
 
 def get_embedding(frame):
-    """
-    Sends a frame to the API for embedding.
-    """
     success, buffer = cv2.imencode(".jpg", frame)
     if not success:
         return None
     try:
         res = requests.post(INFERENCE_URL, files={"file": buffer.tobytes()})
-        if res.status_code == 200:
-            return res.json()["vector"]
-        else:
-            logger.error(f"Embedding failed: {res.status_code} - {res.text}")
-            return None
-    except Exception as e:
-        logger.error(f"Embedding API Error: {e}")
+        return res.json()["vector"] if res.status_code == 200 else None
+    except Exception:
         return None
 
 
 def process_chunk(task):
     job_id = task["job_id"]
-    video_path = task["video_path"]  # Uses /app/assets/...
-    chunk_index = task["chunk_index"]
+    video_path = task["video_path"]
+    user_id = task.get("user_id", "demo_user")
 
-    logger.info(f"--- Processing Chunk #{chunk_index} for Job {job_id} ---")
-
-    # 1. GHOST FILE CHECK
+    # 1. GHOST CHECK
     if not os.path.exists(video_path):
-        logger.critical(f"FILE MISSING: Worker cannot see {video_path}")
-        # List directory to help debug volume mounting issues
-        base_dir = os.path.dirname(video_path)
-        if os.path.exists(base_dir):
-            logger.info(f"Contents of {base_dir}: {os.listdir(base_dir)}")
-        else:
-            logger.error(f"Base directory {base_dir} does not exist!")
+        logger.critical(f"FILE MISSING: {video_path}")
         return
 
     # 2. VISUAL PROCESSING
     try:
-        # Lower threshold to 0.6 to be more sensitive
-        detector = SceneDetector(threshold=0.6)
+        # Initialize your new class
+        detector = StructuralSceneDetector(threshold=12)
+
         cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
 
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps == 0:
-            logger.error(f"Video FPS is 0. Corrupt file? {video_path}")
-            cap.release()
-            return
-
-        # Jump to start of chunk
         start_frame = int(task["start_time"] * fps)
+        max_frame = int(task["end_time"] * fps)
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
         visual_points = []
         current_frame = start_frame
-        max_frame = int(task["end_time"] * fps)
+        last_cut_frame = start_frame  # Track for heartbeat
 
-        logger.info(f"Scanning frames {start_frame} to {max_frame}...")
+        # PARAM: Force a cut every 60 seconds if scene is static
+        # This prevents "vector starvation" on long slides
+        HEARTBEAT_FRAMES = 60 * fps
 
         while cap.isOpened() and current_frame < max_frame:
             ret, frame = cap.read()
             if not ret:
                 break
 
-            if detector.process_frame(frame):
+            # Check for scene change OR heartbeat timeout
+            is_scene_change = detector.process_frame(frame)
+            is_heartbeat = (current_frame - last_cut_frame) > HEARTBEAT_FRAMES
+
+            if is_scene_change or is_heartbeat:
                 timestamp = current_frame / fps
-                logger.info(f"Cut detected at {timestamp:.2f}s")
+                cut_type = "scene_cut" if is_scene_change else "heartbeat"
+
+                logger.info(f"Visual event ({cut_type}) at {timestamp:.2f}s")
 
                 vec = get_embedding(frame)
                 if vec:
@@ -130,52 +113,53 @@ def process_chunk(task):
                             payload={
                                 "video_id": job_id,
                                 "timestamp": timestamp,
-                                "type": "scene_cut",
+                                "type": cut_type,
+                                "user_id": user_id,
+                                "method": "dhash",
                             },
                         )
                     )
+                # Reset the heartbeat timer
+                last_cut_frame = current_frame
+
             current_frame += 1
         cap.release()
 
         if visual_points:
             qdrant.upsert("video_frames", visual_points)
             logger.info(f"Saved {len(visual_points)} visual vectors.")
-        else:
-            logger.info("No scene cuts detected in this chunk.")
 
     except Exception as e:
         logger.error(f"Visual processing failed: {e}")
 
-    # 3. AUDIO PROCESSING
+    # 3. AUDIO PROCESSING (Standard)
     try:
         audio_data = transcribe_chunk(
             video_path, job_id, task["start_time"], task["end_time"]
         )
         if audio_data:
             points = [
-                PointStruct(id=p["id"], vector=p["vector"], payload=p["payload"])
+                PointStruct(
+                    id=p["id"],
+                    vector=p["vector"],
+                    payload={**p["payload"], "user_id": user_id},
+                )
                 for p in audio_data
             ]
             qdrant.upsert("audio_transcripts", points)
-            logger.info(f"Saved {len(points)} audio segments.")
-        else:
-            logger.info("No audio data extracted.")
-
     except Exception as e:
         logger.error(f"Audio processing failed: {e}")
 
-    # 4. REDUCE (Track Completion)
+    # 4. REDUCE
     try:
-        remaining = redis_client.decr(f"job:{job_id}:pending")
-        if remaining <= 0:
+        if redis_client.decr(f"job:{job_id}:pending") <= 0:
             logger.info(f"JOB {job_id} COMPLETE!")
-            # Optional: Update status in DB to 'completed' here
-    except Exception as e:
-        logger.error(f"Redis update failed: {e}")
+    except Exception:
+        pass
 
 
 def start():
-    logger.info("Waiting for tasks...")
+    logger.info("Minion Ready.")
     consumer = KafkaConsumer(
         CHUNK_TOPIC,
         bootstrap_servers=KAFKA_BROKER,

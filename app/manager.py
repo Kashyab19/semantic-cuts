@@ -67,7 +67,8 @@ def download(url, job_id):
 def dispatch_job(job):
     job_id = job["job_id"]
     url = job["url"]
-    print(f"Manager: Processing {job_id}")
+    user_id = job.get("user_id", "demo_user")
+    print(f"Manager: Processing {job_id} for user {user_id}")
 
     # 1. Download
     video_path = download(url, job_id)
@@ -75,7 +76,7 @@ def dispatch_job(job):
         return
 
     # 2. Update Status
-    database.update_status(job_id, "processing")
+    # database.update_status(job_id, "processing")
 
     # 3. Probe Video
     cap = cv2.VideoCapture(video_path)
@@ -90,7 +91,7 @@ def dispatch_job(job):
         end = min(start + CHUNK_DURATION, duration_sec)
         chunks.append((start, end))
 
-    redis_client.set(f"job:{job_id}:pending", len(chunks))
+    redis_client.set(f"job:{job_id}:pending for the user {user_id}", len(chunks))
 
     # 5. Fan-out
     for i, (start, end) in enumerate(chunks):
@@ -100,6 +101,7 @@ def dispatch_job(job):
             "start_time": start,
             "end_time": end,
             "chunk_index": i,
+            "user_id": user_id,
         }
         producer.send(CHUNK_TOPIC, payload)
 
