@@ -1,19 +1,66 @@
-version: "3.8"
-
 services:
-  inference:
+  api:
     build: .
-    container_name: inference_engine
-    command: python3 app/server.py
+    container_name: semantic_api
+    command: uv run uvicorn app.server:app --host 0.0.0.0 --port 8000
     ports:
-      - "8001:8001"
+      - "8000:8000"
     volumes:
-      - .:/app
+      - .:/app # Sync code changes
+      - /app/.venv # <--- PROTECTS THE PYTHON ENVIRONMENT
+      - shared_data:/app/assets # Shared DB & Video files
     environment:
-      - CUDA_VISIBLE_DEVICES=0 # Optional: Only if you have NVIDIA GPU setup
+      - KAFKA_BROKER=redpanda:9092
+      - REDIS_HOST=redis
+      - QDRANT_HOST=qdrant
+      - DATABASE_URL=postgresql://user:password@postgres:5432/semantic_cuts
+    depends_on:
+      - redpanda
+      - redis
+      - qdrant
+      - postgres
     restart: always
 
-  # --- INFRASTRUCTURE ---
+  orchestrator:
+    build: .
+    container_name: semantic_orchestrator
+    command: uv run python -m app.manager
+    volumes:
+      - .:/app # Sync code changes
+      - /app/.venv # <--- PROTECTS THE PYTHON ENVIRONMENT
+      - shared_data:/app/assets # Shared DB & Video files
+    environment:
+      - KAFKA_BROKER=redpanda:9092
+      - REDIS_HOST=redis
+      - DATABASE_URL=postgresql://user:password@postgres:5432/semantic_cuts
+    depends_on:
+      - redpanda
+      - postgres
+    restart: always
+
+  worker:
+    build: .
+    container_name: semantic_worker
+    command: uv run python -m app.worker
+    volumes:
+      - .:/app # Sync code changes
+      - /app/.venv # <--- PROTECTS THE PYTHON ENVIRONMENT
+      - shared_data:/app/assets # Must access the downloaded video
+    environment:
+      - KAFKA_BROKER=redpanda:9092
+      - REDIS_HOST=redis
+      - QDRANT_HOST=qdrant
+      - INFERENCE_API_URL=http://api:8000/embed
+      - DATABASE_URL=postgresql://user:password@postgres:5432/semantic_cuts
+    depends_on:
+      - api
+      - orchestrator
+      - postgres
+    restart: always
+
+  # ----------------------------------------------------------------
+  # INFRASTRUCTURE
+  # ----------------------------------------------------------------
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant
@@ -38,7 +85,6 @@ services:
       - --advertise-kafka-addr PLAINTEXT://redpanda:9092,OUTSIDE://localhost:9094
     ports:
       - "9094:9094"
-      - "8081:8081"
     volumes:
       - ./redpanda_data:/var/lib/redpanda/data
     restart: always
@@ -48,6 +94,23 @@ services:
     container_name: redis
     ports:
       - "6379:6379"
+    restart: always
 
+  postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: semantic_cuts
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # REMOVED: networks: - app_network (so it uses the default network)
+
+# Define the shared volume name
 volumes:
-  shared_video_storage:
+  postgres_data:
+    driver: local
+  shared_data:

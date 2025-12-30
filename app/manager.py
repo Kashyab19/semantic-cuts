@@ -2,142 +2,126 @@ import json
 import os
 
 import cv2
-import database
 import redis
 import yt_dlp
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
 from kafka.admin import NewTopic
 
+# --- INTERNAL IMPORTS ---
+from app.database import index as database
+
 # --- CONFIG ---
 INGEST_TOPIC = "video_ingestion"
 CHUNK_TOPIC = "chunk_processing"
-KAFKA_BROKER = "127.0.0.1:9094"
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9094")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 
-CHUNK_DURATION = 5  # Seconds per minion
+CHUNK_DURATION = 30  # Increased to 30s for better context
 NUM_PARTITIONS = 4
 
-# --- INFRASTRUCTURE ---
 producer = KafkaProducer(
     bootstrap_servers=KAFKA_BROKER,
     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
 )
-
-redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+redis_client = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
 
 
 def setup_topic():
-    """Ensures the topic exists and has enough partitions for parallel processing"""
     admin_client = KafkaAdminClient(bootstrap_servers=KAFKA_BROKER)
-
-    existing_topics = admin_client.list_topics()
-
-    if CHUNK_TOPIC not in existing_topics:
-        print(f"Creating topic '{CHUNK_TOPIC}' with {NUM_PARTITIONS} partitions...")
-        topic_list = [
-            NewTopic(
-                name=CHUNK_TOPIC, num_partitions=NUM_PARTITIONS, replication_factor=1
-            )
-        ]
-        admin_client.create_topics(new_topics=topic_list, validate_only=False)
-    else:
-        # Optional: You could check partition count here and increase it,
-        print(f"Topic '{CHUNK_TOPIC}' exists.")
+    if CHUNK_TOPIC not in admin_client.list_topics():
+        print(f"Creating topic '{CHUNK_TOPIC}'...")
+        admin_client.create_topics(
+            [
+                NewTopic(
+                    name=CHUNK_TOPIC,
+                    num_partitions=NUM_PARTITIONS,
+                    replication_factor=1,
+                )
+            ]
+        )
 
 
 def download(url, job_id):
-    """Downloads video to a shared folder accessible by all workers"""
-    output_path = f"assets/videos/{job_id}.mp4"
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    # DOWNLOAD TO SHARED VOLUME
+    output_path = f"/app/assets/{job_id}.mp4"
 
     if os.path.exists(output_path):
-        print(f" Video already exists, skipping download.")
         return output_path
 
-    print(f" Downloading {url}...")
+    print(f"Downloading {url}...")
     ydl_opts = {
         "format": "best[ext=mp4]",
         "outtmpl": output_path,
         "quiet": True,
         "no_warnings": True,
-        "nocheckcertificate": True,  # Fix for 403 errors
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         return output_path
     except Exception as e:
-        print(f" Download failed: {e}")
+        print(f"Download failed: {e}")
         return None
 
 
 def dispatch_job(job):
     job_id = job["job_id"]
     url = job["url"]
+    user_id = job.get("user_id", "demo_user")
+    print(f"Manager: Processing {job_id} for user {user_id}")
 
-    print(f" Manager: Received Job {job_id}")
-
-    database.add_video(job_id, url, title=f"Video {job_id[:8]}")
-    # 1. Download (The "Shared Asset")
+    # 1. Download
     video_path = download(url, job_id)
     if not video_path:
         return
 
-    # 2. Probe (Get Duration)
+    # 2. Update Status
+    database.update_status(job_id, "processing")
+
+    # 3. Probe Video
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration_sec = total_frames / fps
     cap.release()
 
-    print(f" Duration: {duration_sec:.2f}s | FPS: {fps}")
-
-    # 3. Split (The Logic)
-    # We chop the video into 30-second tasks
+    # 4. Split
     chunks = []
     for start in range(0, int(duration_sec), CHUNK_DURATION):
         end = min(start + CHUNK_DURATION, duration_sec)
         chunks.append((start, end))
 
-    total_chunks = len(chunks)
-    print(f" Slicing into {total_chunks} chunks...")
+    redis_client.set(f"job:{job_id}:pending", len(chunks))
 
-    # 4. Update Scoreboard (Redis)
-    # We set the "Remaining Count" to the number of chunks
-    redis_key = f"job:{job_id}:pending"
-    redis_client.set(redis_key, total_chunks)
-
-    # 5. Dispatch (Fan-Out)
+    # 5. Fan-out
     for i, (start, end) in enumerate(chunks):
-        chunk_payload = {
+        payload = {
             "job_id": job_id,
-            "video_path": video_path,  # Minions read this local file
+            "video_path": video_path,  # Sends absolute path (/app/assets/...)
             "start_time": start,
             "end_time": end,
             "chunk_index": i,
-            "total_chunks": total_chunks,
+            "user_id": user_id,
         }
-        producer.send(CHUNK_TOPIC, chunk_payload)
-
-    database.update_status(job_id, "processing")
+        producer.send(CHUNK_TOPIC, payload)
 
     producer.flush()
-    print(f" Dispatched {total_chunks} tasks to '{CHUNK_TOPIC}'")
+    print(f"Dispatched {len(chunks)} chunks.")
 
 
 def start_manager():
-    print(f" Manager listening on '{INGEST_TOPIC}'...")
-
+    # Initialize database
+    database.init_db()
     setup_topic()
-
     consumer = KafkaConsumer(
         INGEST_TOPIC,
         bootstrap_servers=KAFKA_BROKER,
         value_deserializer=lambda m: json.loads(m.decode("utf-8")),
         group_id="manager_group",
+        max_poll_records=1,  # Only download one video at a time
+        max_poll_interval_ms=1200000,  # Allow 20 minutes for download
     )
-
+    print("Manager listening...")
     for message in consumer:
         dispatch_job(message.value)
 

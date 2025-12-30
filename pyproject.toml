@@ -1,0 +1,26 @@
+[project]
+name = "semantic-cuts"
+version = "0.1.0"
+description = "Distributed Video Search Engine"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "python-multipart>=0.0.9",   # Required for File Uploads
+    "requests>=2.31.0",
+    "redis>=5.0.3",
+    "kafka-python>=2.0.2",
+    "qdrant-client>=1.8.2",
+    "opencv-python-headless>=4.9.0.80", # Headless for Docker
+    "transformers>=4.39.0",
+    "torch>=2.2.2",
+    "pillow>=10.0.0,<12.0.0",     # Fixed conflict
+    "fastembed>=0.2.6",
+    "faster-whisper>=1.0.1",      # The one you are missing now
+    "ffmpeg-python>=0.2.0",       # The one you missed before
+    "yt-dlp>=2024.4.9",
+    "sqlalchemy>=2.0.45",
+    "psycopg2-binary>=2.9.11",
+    "pandas>=2.0.0",
+]
