@@ -22,4 +22,5 @@ dependencies = [
     "yt-dlp>=2024.4.9",
     "sqlalchemy>=2.0.45",
     "psycopg2-binary>=2.9.11",
+    "pandas>=2.0.0",
 ]

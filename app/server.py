@@ -15,8 +15,11 @@ from pydantic import BaseModel
 from qdrant_client import QdrantClient
 from transformers import CLIPModel, CLIPProcessor
 
-from app import database
-from app.algo.index import deduplicate_results, reciprocal_rank_fusion
+from app.database import index
+from app.utils.index import deduplicate_results, reciprocal_rank_fusion
+
+# Initialize database on startup
+index.init_db()
 
 # --- CONFIG ---
 # Detect if running in Docker or Local
@@ -95,8 +98,24 @@ async def queue_video(
     if not x_user_id:
         raise HTTPException(status_code=400, detail="User ID is missing")
 
-    job_id = uuid.uuid4().hex
-    # database.add_video(job_id, payload.url, payload.title)
+    # Add video to database (smart ingest: deduplicates by URL hash)
+    db = index.SessionLocal()
+    try:
+        video, is_new = index.add_video_to_library(
+            db, payload.url, payload.title or "Untitled", x_user_id
+        )
+        job_id = video.id
+
+        if is_new:
+            logger.info(f"New video added: {job_id}")
+        else:
+            logger.info(f"Existing video linked to user: {job_id}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Database error: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+    finally:
+        db.close()
 
     task_payload = {
         "job_id": job_id,

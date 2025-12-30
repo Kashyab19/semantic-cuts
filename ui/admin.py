@@ -2,18 +2,12 @@ import os
 import sys
 import time
 
-# 1. Get the path to the current file's directory (ui/)
-current_dir = os.path.dirname(os.path.abspath(__file__))
+# Add project root to path for proper imports
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
-# 2. Get the path to the 'app' directory (sibling to ui/)
-#    Logic: Go up one level (..), then down into 'app'
-app_dir = os.path.join(os.path.dirname(current_dir), "app")
-
-# 3. Add the 'app' directory explicitly to Python's search path
-sys.path.append(app_dir)
-
-# 4. Now import 'database' directly (since we are technically "inside" the app folder now)
-import database
+# Now import properly
+from app.database import index as database
 
 # 4. Now you can imacport from the 'app' folder
 import pandas as pd
@@ -56,6 +50,8 @@ with col1:
 # --- RIGHT: LIBRARY ---
 with col2:
     st.subheader("2. Video Library")
+    # Initialize database if needed
+    database.init_db()
     videos = database.get_all_videos()
 
     if not videos:

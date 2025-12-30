@@ -41,7 +41,7 @@ services:
   worker:
     build: .
     container_name: semantic_worker
-    command: uv run python -m app.minion
+    command: uv run python -m app.worker
     volumes:
       - .:/app # Sync code changes
       - /app/.venv # <--- PROTECTS THE PYTHON ENVIRONMENT

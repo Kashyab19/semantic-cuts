@@ -8,7 +8,7 @@ from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
 from kafka.admin import NewTopic
 
 # --- INTERNAL IMPORTS ---
-from app import database  # <--- FIXED IMPORT
+from app.database import index as database
 
 # --- CONFIG ---
 INGEST_TOPIC = "video_ingestion"
@@ -76,7 +76,7 @@ def dispatch_job(job):
         return
 
     # 2. Update Status
-    # database.update_status(job_id, "processing")
+    database.update_status(job_id, "processing")
 
     # 3. Probe Video
     cap = cv2.VideoCapture(video_path)
@@ -91,7 +91,7 @@ def dispatch_job(job):
         end = min(start + CHUNK_DURATION, duration_sec)
         chunks.append((start, end))
 
-    redis_client.set(f"job:{job_id}:pending for the user {user_id}", len(chunks))
+    redis_client.set(f"job:{job_id}:pending", len(chunks))
 
     # 5. Fan-out
     for i, (start, end) in enumerate(chunks):
@@ -110,12 +110,16 @@ def dispatch_job(job):
 
 
 def start_manager():
+    # Initialize database
+    database.init_db()
     setup_topic()
     consumer = KafkaConsumer(
         INGEST_TOPIC,
         bootstrap_servers=KAFKA_BROKER,
         value_deserializer=lambda m: json.loads(m.decode("utf-8")),
         group_id="manager_group",
+        max_poll_records=1,  # Only download one video at a time
+        max_poll_interval_ms=1200000,  # Allow 20 minutes for download
     )
     print("Manager listening...")
     for message in consumer:

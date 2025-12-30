@@ -1,19 +1,21 @@
 import json
 import logging
 import os
+import threading
+import time
 import uuid
 
 import cv2
 import redis
 import requests
 from kafka import KafkaConsumer
+from kafka.errors import CommitFailedError
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 # --- INTERNAL IMPORTS ---
 from app.audio import transcribe_chunk
-
-# CHANGE: Importing your new isolated class
+from app.database import index as database
 from app.utils.structural_scene_detector import StructuralSceneDetector
 
 # --- CONFIG ---
@@ -27,7 +29,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
-logger = logging.getLogger("Minion")
+logger = logging.getLogger("Worker")
 
 # --- INFRASTRUCTURE ---
 try:
@@ -60,20 +62,20 @@ def get_embedding(frame):
 
 
 def process_chunk(task):
+    """
+    Standard processing logic. No Kafka specific code here.
+    """
     job_id = task["job_id"]
     video_path = task["video_path"]
     user_id = task.get("user_id", "demo_user")
 
-    # 1. GHOST CHECK
     if not os.path.exists(video_path):
         logger.critical(f"FILE MISSING: {video_path}")
         return
 
-    # 2. VISUAL PROCESSING
+    # --- VISUAL PROCESSING ---
     try:
-        # Initialize your new class
         detector = StructuralSceneDetector(threshold=12)
-
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
 
@@ -83,10 +85,7 @@ def process_chunk(task):
 
         visual_points = []
         current_frame = start_frame
-        last_cut_frame = start_frame  # Track for heartbeat
-
-        # PARAM: Force a cut every 60 seconds if scene is static
-        # This prevents "vector starvation" on long slides
+        last_cut_frame = start_frame
         HEARTBEAT_FRAMES = 60 * fps
 
         while cap.isOpened() and current_frame < max_frame:
@@ -94,7 +93,6 @@ def process_chunk(task):
             if not ret:
                 break
 
-            # Check for scene change OR heartbeat timeout
             is_scene_change = detector.process_frame(frame)
             is_heartbeat = (current_frame - last_cut_frame) > HEARTBEAT_FRAMES
 
@@ -102,7 +100,8 @@ def process_chunk(task):
                 timestamp = current_frame / fps
                 cut_type = "scene_cut" if is_scene_change else "heartbeat"
 
-                logger.info(f"Visual event ({cut_type}) at {timestamp:.2f}s")
+                # Log sparsely to avoid spamming production logs
+                logger.debug(f"Visual event ({cut_type}) at {timestamp:.2f}s")
 
                 vec = get_embedding(frame)
                 if vec:
@@ -119,9 +118,7 @@ def process_chunk(task):
                             },
                         )
                     )
-                # Reset the heartbeat timer
                 last_cut_frame = current_frame
-
             current_frame += 1
         cap.release()
 
@@ -131,8 +128,9 @@ def process_chunk(task):
 
     except Exception as e:
         logger.error(f"Visual processing failed: {e}")
+        raise e  # Re-raise to signal failure to the thread wrapper
 
-    # 3. AUDIO PROCESSING (Standard)
+    # --- AUDIO PROCESSING ---
     try:
         audio_data = transcribe_chunk(
             video_path, job_id, task["start_time"], task["end_time"]
@@ -149,26 +147,82 @@ def process_chunk(task):
             qdrant.upsert("audio_transcripts", points)
     except Exception as e:
         logger.error(f"Audio processing failed: {e}")
+        # Audio failure might be non-critical, decide if you want to raise e
 
-    # 4. REDUCE
+    # --- REDUCE STEP ---
     try:
-        if redis_client.decr(f"job:{job_id}:pending") <= 0:
+        pending_key = f"job:{job_id}:pending"
+        remaining = redis_client.decr(pending_key)
+        if remaining <= 0:
             logger.info(f"JOB {job_id} COMPLETE!")
-    except Exception:
-        pass
+            # Update database status
+            database.update_status(job_id, "completed")
+            redis_client.set(f"job:{job_id}:status", "completed")
+    except Exception as e:
+        logger.error(f"Error updating job status: {e}")
 
 
 def start():
-    logger.info("Minion Ready.")
+    logger.info("Worker Ready (Threaded Mode).")
+
     consumer = KafkaConsumer(
         CHUNK_TOPIC,
         bootstrap_servers=KAFKA_BROKER,
         value_deserializer=lambda m: json.loads(m.decode("utf-8")),
         group_id="minion_group",
+        max_poll_records=1,  # Fetch only one
+        enable_auto_commit=False,  # We commit manually
+        max_poll_interval_ms=600000,  # 10m safety net (backup for thread loop)
     )
+
     for msg in consumer:
-        process_chunk(msg.value)
+        task = msg.value
+        logger.info(
+            f"Processing chunk {task.get('chunk_index')} for job {task.get('job_id')}"
+        )
+
+        # 1. PAUSE: Stop fetching to prevent rebalance during processing
+        partitions = consumer.assignment()
+        consumer.pause(*partitions)  # <--- FIXED: Added * to unpack
+
+        # 2. THREAD: Run processing in background
+        thread_exc = []
+
+        def worker():
+            try:
+                process_chunk(task)
+            except Exception as e:
+                thread_exc.append(e)
+
+        t = threading.Thread(target=worker)
+        t.start()
+
+        # 3. HEARTBEAT: Keep the session alive while thread works
+        while t.is_alive():
+            consumer.poll(0)  # Sends heartbeat
+            time.sleep(1)
+
+        t.join()  # Ensure finish
+
+        # 4. RESUME & COMMIT
+        consumer.resume(*partitions)  # <--- FIXED: Added * to unpack
+
+        if thread_exc:
+            logger.error(f"Chunk failed: {thread_exc[0]}")
+            # OPTIONAL: Send to Dead Letter Queue (DLQ) here
+            # For now, we commit to avoid the Infinite Loop (Poison Pill)
+            consumer.commit()
+        else:
+            try:
+                consumer.commit()
+                logger.info("Chunk committed successfully.")
+            except CommitFailedError:
+                logger.critical(
+                    "Commit failed! Processing took too long even with heartbeats."
+                )
 
 
 if __name__ == "__main__":
+    # Initialize database
+    database.init_db()
     start()

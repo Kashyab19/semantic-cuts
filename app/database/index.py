@@ -42,8 +42,6 @@ class Video(Base):
 
 
 # --- HELPERS ---
-
-
 def init_db():
     """Creates the tables if they don't exist."""
     Base.metadata.create_all(bind=engine)
@@ -106,3 +104,22 @@ def get_user_video_ids(db, user_id: str):
     results = db.query(user_library.c.video_id).filter_by(user_id=user_id).all()
     # Results is list of tuples [('id1',), ('id2',)], flatten it:
     return [r[0] for r in results]
+
+
+def get_all_videos():
+    """Get all videos for admin UI."""
+    db = SessionLocal()
+    try:
+        videos = db.query(Video).all()
+        return [
+            {
+                "id": v.id,
+                "url": v.url,
+                "title": v.title,
+                "status": v.status,
+                "created_at": v.created_at.isoformat() if v.created_at else None,
+            }
+            for v in videos
+        ]
+    finally:
+        db.close()
