@@ -20,7 +20,17 @@ from transformers import CLIPModel, CLIPProcessor
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="Semantic Cuts - Inference Engine")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- CONFIGURATION ---
 
@@ -291,9 +301,10 @@ def search_video(query: str, limit: int = 5):
                 {
                     "score": hit.score,
                     "video_id": payload.get("video_id", "unknown"),
-                    # We save 'timestamp' as a float (e.g., 12.0), so we read that back
                     "timestamp": payload.get("timestamp", 0.0),
                     "frame_index": payload.get("frame_index"),
+                    "url": payload.get("url", ""),
+                    "second_formatted": payload.get("second_formatted", "0:00"),
                 }
             )
 
@@ -301,6 +312,22 @@ def search_video(query: str, limit: int = 5):
 
     except Exception as e:
         logger.error(f"Search failed: {e}")
+        return {"error": str(e)}
+
+
+@app.get("/stats")
+def stats():
+    if not qdrant_client:
+        return {"error": "Qdrant is not connected"}
+    try:
+        info = qdrant_client.get_collection(COLLECTION_NAME)
+        return {
+            "collection": COLLECTION_NAME,
+            "points_count": info.points_count,
+            "vectors_count": info.vectors_count,
+        }
+    except Exception as e:
+        logger.error(f"Stats failed: {e}")
         return {"error": str(e)}
 
 
