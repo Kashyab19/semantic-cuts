@@ -115,7 +115,7 @@ export function DashboardPage() {
             <div className="rounded-xl border border-border bg-surface-card p-4">
               <h3 className="mb-1 font-serif text-sm font-semibold">Indexed Vectors</h3>
               <p className="text-2xl font-bold text-accent">
-                {stats.points_count.toLocaleString()}
+                {stats.points_count?.toLocaleString() ?? "—"}
               </p>
             </div>
           )}

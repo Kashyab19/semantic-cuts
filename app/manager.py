@@ -2,17 +2,17 @@ import json
 import os
 
 import cv2
-import database
 import redis
 import yt_dlp
+from app import database
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
 from kafka.admin import NewTopic
 
 # --- CONFIG ---
 INGEST_TOPIC = "video_ingestion"
 CHUNK_TOPIC = "chunk_processing"
-KAFKA_BROKER = "127.0.0.1:9094"
-REDIS_HOST = "localhost"
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9094")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = 6379
 
 CHUNK_DURATION = 5  # Seconds per minion

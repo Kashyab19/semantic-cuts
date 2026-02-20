@@ -5,7 +5,7 @@ import uuid
 import cv2
 import redis
 import requests
-from app.scene_detect import SceneDetector
+from app.scene_detector import SceneDetector
 from kafka import KafkaConsumer
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
@@ -16,9 +16,9 @@ CHUNK_TOPIC = "chunk_processing"
 # The Minion now talks to the "Inference Service" instead of loading the model itself
 INFERENCE_URL = os.getenv("INFERENCE_API_URL", "http://localhost:8001/embed")
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9094")
-REDIS_HOST = "localhost"
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = 6379
-QDRANT_HOST = "localhost"
+QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = 6333
 COLLECTION_NAME = "video_frames"
 

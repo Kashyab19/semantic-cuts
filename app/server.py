@@ -33,15 +33,9 @@ app.add_middleware(
 )
 
 # --- CONFIGURATION ---
-
-# Detect if running inside Docker or Local
-IN_DOCKER = os.getenv("KUBERNETES_SERVICE_HOST") or os.path.exists("/.dockerenv")
-
-# Define Hostnames
-QDRANT_HOST = "qdrant" if IN_DOCKER else "localhost"
-REDIS_HOST = "redis" if IN_DOCKER else "localhost"
-REDPANDA_HOST = "redpanda" if IN_DOCKER else "localhost"
-REDPANDA_PORT = 9092 if IN_DOCKER else 9094
+QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9094")
 
 COLLECTION_NAME = "video_frames"
 VECTOR_SIZE = 512
@@ -52,7 +46,7 @@ VECTOR_SIZE = 512
 try:
     redis_client = redis.Redis(host=REDIS_HOST, port=6379, db=0)
     redis_client.ping()
-    logger.info(f"Redis connected at {REDIS_HOST}:6379")
+    logger.info(f"Redis connected at {REDIS_HOST}")
 except Exception as e:
     logger.error(f"Redis connection failed: {e}")
     redis_client = None
@@ -60,7 +54,7 @@ except Exception as e:
 # Qdrant
 try:
     qdrant_client = QdrantClient(host=QDRANT_HOST, port=6333)
-    logger.info(f"Qdrant connected at {QDRANT_HOST}:6333")
+    logger.info(f"Qdrant connected at {QDRANT_HOST}")
 except Exception as e:
     logger.error(f"Qdrant connection failed: {e}")
     qdrant_client = None
@@ -68,10 +62,10 @@ except Exception as e:
 # Redpanda (Kafka)
 try:
     producer = KafkaProducer(
-        bootstrap_servers=f"{REDPANDA_HOST}:{REDPANDA_PORT}",
+        bootstrap_servers=KAFKA_BROKER,
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
     )
-    logger.info(f"Redpanda connected at {REDPANDA_HOST}:{REDPANDA_PORT}")
+    logger.info(f"Kafka connected at {KAFKA_BROKER}")
 except Exception as e:
     logger.error(f"Redpanda connection failed: {e}")
     producer = None
@@ -145,13 +139,15 @@ def process_video(file_path: str, video_id: str):
                     images=pil_image, return_tensors="pt", padding=True
                 ).to(DEVICE)
                 with torch.no_grad():
-                    outputs = model.get_image_features(**inputs)
+                    image_features = model.get_image_features(**inputs)
 
-                # Normalize
-                embedding = outputs[0].cpu().numpy()
-                norm = np.linalg.norm(embedding)
-                if norm > 0:
-                    embedding = embedding / norm
+                # Normalize in torch space
+                image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+
+                # Ensure flat 1D vector
+                embedding = image_features.squeeze(0).cpu().numpy()
+                if embedding.ndim > 1:
+                    embedding = embedding[0]
 
                 # Prepare Qdrant Point
                 timestamp = current_frame / fps
@@ -229,6 +225,34 @@ def health():
             "redis": "connected" if redis_client else "disconnected",
         },
     }
+
+
+@app.post("/embed")
+async def embed_image(file: UploadFile = File(...)):
+    """Embeds a single image frame and returns the CLIP vector."""
+    try:
+        content = await file.read()
+        nparr = np.frombuffer(content, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb_frame)
+
+        inputs = processor(images=pil_image, return_tensors="pt", padding=True).to(DEVICE)
+        with torch.no_grad():
+            image_features = model.get_image_features(**inputs)
+
+        # Normalize in torch space
+        image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+
+        # Ensure flat 1D vector — squeeze batch dim, take CLS token if sequence output
+        embedding = image_features.squeeze(0).cpu().numpy()
+        if embedding.ndim > 1:
+            embedding = embedding[0]
+
+        return {"vector": embedding.tolist()}
+    except Exception as e:
+        logger.error(f"Embed failed: {e}")
+        return {"error": str(e)}
 
 
 @app.post("/ingest")

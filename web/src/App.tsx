@@ -2,9 +2,18 @@ import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 import { Navbar } from "./components/layout/Navbar";
 import { AdminPage } from "./pages/AdminPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { LandingPage } from "./pages/LandingPage";
 import { SearchPage } from "./pages/SearchPage";
 
-function RootLayout() {
+function LandingLayout() {
+  return (
+    <div className="min-h-screen bg-surface text-text">
+      <Outlet />
+    </div>
+  );
+}
+
+function AppLayout() {
   return (
     <div className="min-h-screen bg-surface text-text">
       <Navbar />
@@ -15,9 +24,13 @@ function RootLayout() {
 
 const router = createBrowserRouter([
   {
-    element: <RootLayout />,
+    element: <LandingLayout />,
+    children: [{ path: "/", element: <LandingPage /> }],
+  },
+  {
+    element: <AppLayout />,
     children: [
-      { path: "/", element: <SearchPage /> },
+      { path: "/playground", element: <SearchPage /> },
       { path: "/dashboard", element: <DashboardPage /> },
       { path: "/admin", element: <AdminPage /> },
     ],

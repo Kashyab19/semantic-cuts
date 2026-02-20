@@ -1,4 +1,5 @@
 import json
+import os
 import uuid
 
 from fastapi import FastAPI, HTTPException
@@ -7,6 +8,8 @@ from kafka import KafkaProducer
 from pydantic import BaseModel
 
 from app.database import get_all_videos
+
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9094")
 
 app = FastAPI()
 
@@ -19,7 +22,7 @@ app.add_middleware(
 )
 
 producer = KafkaProducer(
-    bootstrap_servers="127.0.0.1:9094",
+    bootstrap_servers=KAFKA_BROKER,
     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
 )
 

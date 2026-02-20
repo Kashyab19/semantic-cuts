@@ -1,7 +1,7 @@
 import { NavLink } from "react-router-dom";
 
 const links = [
-  { to: "/", label: "Search" },
+  { to: "/playground", label: "Search" },
   { to: "/dashboard", label: "Dashboard" },
   { to: "/admin", label: "Admin" },
 ];
@@ -16,7 +16,6 @@ export function Navbar() {
             <NavLink
               key={l.to}
               to={l.to}
-              end={l.to === "/"}
               className={({ isActive }) =>
                 `rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
                   isActive
