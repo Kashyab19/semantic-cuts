@@ -16,13 +16,11 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from transformers import CLIPModel, CLIPProcessor
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Semantic Cuts - Inference Engine")
+app = FastAPI(title="Semantic Cuts - Your Video Search Engine")
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,7 +46,7 @@ try:
     redis_client.ping()
     logger.info(f"Redis connected at {REDIS_HOST}")
 except Exception as e:
-    logger.error(f"Redis connection failed: {e}")
+    logger.error(f"Redis connection failed: {e}", exc_info=True)
     redis_client = None
 
 # Qdrant
@@ -56,7 +54,7 @@ try:
     qdrant_client = QdrantClient(host=QDRANT_HOST, port=6333)
     logger.info(f"Qdrant connected at {QDRANT_HOST}")
 except Exception as e:
-    logger.error(f"Qdrant connection failed: {e}")
+    logger.error(f"Qdrant connection failed: {e}", exc_info=True)
     qdrant_client = None
 
 # Redpanda (Kafka)
@@ -67,7 +65,7 @@ try:
     )
     logger.info(f"Kafka connected at {KAFKA_BROKER}")
 except Exception as e:
-    logger.error(f"Redpanda connection failed: {e}")
+    logger.error(f"Redpanda connection failed: {e}", exc_info=True)
     producer = None
 
 # --- ML MODEL ---
@@ -98,7 +96,7 @@ def startup_event():
         else:
             logger.info(f"Collection {COLLECTION_NAME} already exists.")
     except Exception as e:
-        logger.error(f"Failed to initialize Qdrant: {e}")
+        logger.error(f"Failed to initialize Qdrant: {e}", exc_info=True)
 
 
 def process_video(file_path: str, video_id: str):
@@ -110,7 +108,7 @@ def process_video(file_path: str, video_id: str):
 
     cap = cv2.VideoCapture(file_path)
     if not cap.isOpened():
-        logger.error(f"Could not open video file: {file_path}")
+        logger.error(f"Could not open video file: {file_path}", exc_info=True)
         return
 
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -172,7 +170,7 @@ def process_video(file_path: str, video_id: str):
                     )
                 )
             except Exception as e:
-                logger.error(f"Error processing frame {current_frame}: {e}")
+                logger.error(f"Error processing frame {current_frame}: {e}", exc_info=True)
 
         current_frame += 1
 
@@ -188,7 +186,7 @@ def process_video(file_path: str, video_id: str):
                 f"Uploaded {len(points_to_upload)} frames to Qdrant for {video_id}."
             )
         except Exception as e:
-            logger.error(f"Failed to upload to Qdrant: {e}")
+            logger.error(f"Failed to upload to Qdrant: {e}", exc_info=True)
 
     # Cleanup temp file
     try:
@@ -209,7 +207,7 @@ def process_video(file_path: str, video_id: str):
             )
             producer.flush()
         except Exception as e:
-            logger.error(f"Failed to send Kafka message: {e}")
+            logger.error(f"Failed to send Kafka message: {e}", exc_info=True)
 
     logger.info(f"Finished processing video: {video_id}")
 
@@ -251,7 +249,7 @@ async def embed_image(file: UploadFile = File(...)):
 
         return {"vector": embedding.tolist()}
     except Exception as e:
-        logger.error(f"Embed failed: {e}")
+        logger.error(f"Embed failed: {e}", exc_info=True)
         return {"error": str(e)}
 
 
@@ -283,7 +281,7 @@ async def ingest_video(background_tasks: BackgroundTasks, file: UploadFile = Fil
         }
 
     except Exception as e:
-        logger.error(f"Ingest failed: {e}")
+        logger.error(f"Ingest failed: {e}", exc_info=True)
         return {"error": str(e)}
 
 
@@ -335,7 +333,7 @@ def search_video(query: str, limit: int = 5):
         return {"query": query, "results": results}
 
     except Exception as e:
-        logger.error(f"Search failed: {e}")
+        logger.error(f"Search failed: {e}", exc_info=True)
         return {"error": str(e)}
 
 
@@ -351,7 +349,7 @@ def stats():
             "vectors_count": info.vectors_count,
         }
     except Exception as e:
-        logger.error(f"Stats failed: {e}")
+        logger.error(f"Stats failed: {e}", exc_info=True)
         return {"error": str(e)}
 
 

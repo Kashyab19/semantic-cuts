@@ -18,8 +18,4 @@ Pillow
 torch
 transformers
 
-# --- Frontend (UI) ---
-streamlit
-watchdog
-
 redis

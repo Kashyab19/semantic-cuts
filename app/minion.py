@@ -5,10 +5,14 @@ import uuid
 import cv2
 import redis
 import requests
+import logging 
+
 from app.scene_detector import SceneDetector
 from kafka import KafkaConsumer
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
+
+logger = logging.getLogger(__name__)
 
 # --- CONFIG ---
 CHUNK_TOPIC = "chunk_processing"
@@ -23,7 +27,7 @@ QDRANT_PORT = 6333
 COLLECTION_NAME = "video_frames"
 
 # --- INFRASTRUCTURE ---
-print(f"Minion reporting for duty. Inference Server: {INFERENCE_URL}")
+logger.info(f"Minion reporting for duty. Inference Server: {INFERENCE_URL}")
 
 qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
@@ -34,7 +38,7 @@ if not qdrant.collection_exists(COLLECTION_NAME):
         collection_name=COLLECTION_NAME,
         vectors_config=VectorParams(size=512, distance=Distance.COSINE),
     )
-print("Ready to work.")
+logger.info("Ready to work.")
 
 
 def get_embedding_from_server(frame):
@@ -52,10 +56,10 @@ def get_embedding_from_server(frame):
         if response.status_code == 200:
             return response.json()["vector"]
         else:
-            print(f"Error from Inference Server: {response.text}")
+            logger.error(f"Error from Inference Server: {response.text}", exc_info=True)
             return None
     except Exception as e:
-        print(f"Connection Error to Inference Server: {e}")
+        logger.error(f"Connection Error to Inference Server: {e}", exc_info=True)
         return None
 
 
@@ -66,7 +70,7 @@ def process_chunk(task):
     end_time = task["end_time"]
     chunk_index = task["chunk_index"]
 
-    print(f"Processing Chunk #{chunk_index} ({start_time}s - {end_time}s)")
+    logger.info(f"Processing Chunk #{chunk_index} ({start_time}s - {end_time}s)")
 
     # Instantiate Detector FRESH for every chunk
     detector = SceneDetector(threshold=0.7)
@@ -127,7 +131,7 @@ def process_chunk(task):
                         },
                     )
                 )
-                print(f"Scene Change at {timestamp:.1f}s -> Encoded.")
+                logger.info(f"Scene Change at {timestamp:.1f}s -> Encoded.")
 
                 # Update the last cut time so we enforce the cooldown
                 last_cut_timestamp = timestamp
@@ -139,23 +143,21 @@ def process_chunk(task):
     # Upload to DB
     if points_to_upload:
         qdrant.upsert(collection_name=COLLECTION_NAME, points=points_to_upload)
-        print(f"Saved {len(points_to_upload)} vectors for Chunk #{chunk_index}.")
+        logger.info(f"Saved {len(points_to_upload)} vectors for Chunk #{chunk_index}.")
     else:
-        print(f"No scenes detected in Chunk #{chunk_index} (Static video?)")
+        logger.info(f"No scenes detected in Chunk #{chunk_index} (Static video?)")
 
-    # --- THE REDUCE STEP ---
     redis_key = f"job:{job_id}:pending"
-    # Force cast to int for type safety
     remaining = int(redis_client.decr(redis_key))
 
     if remaining <= 0:
-        print(f"JOB {job_id} COMPLETE! (I was the last one)")
+        logger.info(f"JOB {job_id} COMPLETE! (I was the last one)")
     else:
-        print(f"There are {remaining} chunks left for other minions.")
+        logger.info(f"There are {remaining} chunks left for other minions.")
 
 
 def start_minion():
-    print(f"Minion listening on '{CHUNK_TOPIC}'...")
+    logger.info(f"Minion listening on '{CHUNK_TOPIC}'...")
     consumer = KafkaConsumer(
         CHUNK_TOPIC,
         bootstrap_servers=KAFKA_BROKER,
@@ -168,7 +170,7 @@ def start_minion():
         try:
             process_chunk(message.value)
         except Exception as e:
-            print(f"Error processing chunk: {e}")
+            logger.error(f"Error processing chunk: {e}", exc_info=True)
 
 
 if __name__ == "__main__":

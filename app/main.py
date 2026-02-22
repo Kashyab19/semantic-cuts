@@ -1,6 +1,7 @@
 import json
 import os
 import uuid
+import logging
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +9,8 @@ from kafka import KafkaProducer
 from pydantic import BaseModel
 
 from app.database import get_all_videos
+
+logger = logging.getLogger(__name__)
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9094")
 
@@ -52,7 +55,7 @@ async def video(payload: VideoRequest):
         producer.send("video_ingestion", task_payload)
         producer.flush()  # WHY?
 
-        print(f"Job {job_id} queued")
+        logger.info(f"Job {job_id} queued")
 
         return {
             "message": "Job queued successfully",
@@ -61,6 +64,7 @@ async def video(payload: VideoRequest):
         }
 
     except Exception as e:
+        logger.error(f"Kafka error for job {job_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"[Kafka Error]{str(e)}")
 
 
