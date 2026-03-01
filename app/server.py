@@ -250,7 +250,7 @@ async def embed_image(file: UploadFile = File(...)):
         return {"vector": embedding.tolist()}
     except Exception as e:
         logger.error(f"Embed failed: {e}", exc_info=True)
-        return {"error": str(e)}
+        return {"error": "Embedding failed"}
 
 
 @app.post("/ingest")
@@ -282,7 +282,7 @@ async def ingest_video(background_tasks: BackgroundTasks, file: UploadFile = Fil
 
     except Exception as e:
         logger.error(f"Ingest failed: {e}", exc_info=True)
-        return {"error": str(e)}
+        return {"error": "Video ingestion failed"}
 
 
 @app.get("/search")
@@ -334,7 +334,7 @@ def search_video(query: str, limit: int = 5):
 
     except Exception as e:
         logger.error(f"Search failed: {e}", exc_info=True)
-        return {"error": str(e)}
+        return {"error": "Search failed"}
 
 
 @app.get("/stats")
@@ -350,7 +350,7 @@ def stats():
         }
     except Exception as e:
         logger.error(f"Stats failed: {e}", exc_info=True)
-        return {"error": str(e)}
+        return {"error": "Failed to retrieve stats"}
 
 
 if __name__ == "__main__":

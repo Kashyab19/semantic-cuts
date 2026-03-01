@@ -65,7 +65,7 @@ async def video(payload: VideoRequest):
 
     except Exception as e:
         logger.error(f"Kafka error for job {job_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"[Kafka Error]{str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to queue video for processing")
 
 
 @app.get("/videos")
