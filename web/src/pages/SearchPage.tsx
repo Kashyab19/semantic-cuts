@@ -11,7 +11,7 @@ export function SearchPage() {
   return (
     <PageShell>
       <div className="mb-8">
-        <h1 className="mb-1 font-serif text-2xl font-bold">Semantic Cuts</h1>
+        <h1 className="mb-1 text-2xl font-semibold">Semantic Cuts</h1>
         <p className="text-sm text-text-secondary">Multimodal Video Search Engine</p>
       </div>
 

@@ -1,5 +1,6 @@
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 import { Navbar } from "./components/layout/Navbar";
+import { useTheme } from "./hooks/useTheme";
 import { AdminPage } from "./pages/AdminPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { LandingPage } from "./pages/LandingPage";
@@ -38,5 +39,6 @@ const router = createBrowserRouter([
 ]);
 
 export default function App() {
+  useTheme();
   return <RouterProvider router={router} />;
 }

@@ -43,26 +43,26 @@ export function DashboardPage() {
 
   return (
     <PageShell>
-      <h1 className="mb-6 font-serif text-2xl font-bold">Dashboard</h1>
+      <h1 className="mb-6 text-2xl font-semibold">Dashboard</h1>
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-4">
         {/* Sidebar */}
         <aside className="space-y-6">
           {/* Add Video */}
-          <div className="rounded-xl border border-border bg-surface-card p-4">
-            <h3 className="mb-3 font-serif text-sm font-semibold">Add Video</h3>
+          <div className="rounded-lg border border-border bg-surface-card p-4">
+            <h3 className="mb-3 text-sm font-semibold">Add Video</h3>
             <form onSubmit={handleIngest} className="space-y-2">
               <input
                 type="text"
                 value={videoUrl}
                 onChange={(e) => setVideoUrl(e.target.value)}
                 placeholder="https://example.com/video.mp4"
-                className="w-full rounded-lg border border-border px-3 py-2 text-sm focus:border-border-focus focus:ring-2 focus:ring-ring-focus focus:outline-none"
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm focus:border-border-focus focus:ring-2 focus:ring-ring-focus focus:outline-none"
               />
               <button
                 type="submit"
                 disabled={submitting || !videoUrl.trim()}
-                className="w-full rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+                className="w-full rounded-lg bg-accent px-3 py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:opacity-50"
               >
                 {submitting ? "Indexing..." : "Index Video"}
               </button>
@@ -73,8 +73,8 @@ export function DashboardPage() {
           </div>
 
           {/* System Status */}
-          <div className="rounded-xl border border-border bg-surface-card p-4">
-            <h3 className="mb-3 font-serif text-sm font-semibold">System Status</h3>
+          <div className="rounded-lg border border-border bg-surface-card p-4">
+            <h3 className="mb-3 text-sm font-semibold">System Status</h3>
             {healthError ? (
               <StatusBadge label="Offline" variant="red" />
             ) : health ? (
@@ -112,8 +112,8 @@ export function DashboardPage() {
 
           {/* Indexed Vectors */}
           {stats && (
-            <div className="rounded-xl border border-border bg-surface-card p-4">
-              <h3 className="mb-1 font-serif text-sm font-semibold">Indexed Vectors</h3>
+            <div className="rounded-lg border border-border bg-surface-card p-4">
+              <h3 className="mb-1 text-sm font-semibold">Indexed Vectors</h3>
               <p className="text-2xl font-bold text-accent">
                 {stats.points_count?.toLocaleString() ?? "—"}
               </p>
@@ -129,12 +129,12 @@ export function DashboardPage() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="Describe a moment..."
-              className="flex-1 rounded-lg border border-border px-4 py-2.5 text-sm focus:border-border-focus focus:ring-2 focus:ring-ring-focus focus:outline-none"
+              className="flex-1 rounded-lg border border-border bg-surface px-4 py-2.5 text-sm focus:border-border-focus focus:ring-2 focus:ring-ring-focus focus:outline-none"
             />
             <button
               type="submit"
               disabled={loading || !input.trim()}
-              className="rounded-lg bg-accent px-6 py-2.5 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+              className="rounded-lg bg-accent px-6 py-2.5 text-sm font-medium text-surface hover:bg-accent-hover disabled:opacity-50"
             >
               {loading ? "Searching..." : "Search"}
             </button>
@@ -147,7 +147,7 @@ export function DashboardPage() {
           )}
           {!loading && results.length > 0 && (
             <>
-              <h2 className="mb-4 font-serif text-lg font-semibold">Top Matches</h2>
+              <h2 className="mb-4 text-lg font-semibold">Top Matches</h2>
               <ResultsGrid results={results} columns={2} />
             </>
           )}

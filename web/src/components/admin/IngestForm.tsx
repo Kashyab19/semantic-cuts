@@ -43,7 +43,7 @@ export function IngestForm({ onDispatched }: IngestFormProps) {
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="https://example.com/video.mp4"
-          className="w-full rounded-lg border border-border px-3 py-2 text-sm focus:border-border-focus focus:ring-2 focus:ring-ring-focus focus:outline-none"
+          className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm focus:border-border-focus focus:ring-2 focus:ring-ring-focus focus:outline-none"
         />
       </div>
       <div>
@@ -54,13 +54,13 @@ export function IngestForm({ onDispatched }: IngestFormProps) {
           type="text"
           value={userId}
           onChange={(e) => setUserId(e.target.value)}
-          className="w-full rounded-lg border border-border px-3 py-2 text-sm focus:border-border-focus focus:ring-2 focus:ring-ring-focus focus:outline-none"
+          className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm focus:border-border-focus focus:ring-2 focus:ring-ring-focus focus:outline-none"
         />
       </div>
       <button
         type="submit"
         disabled={submitting || !url.trim()}
-        className="w-full rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+        className="w-full rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:opacity-50"
       >
         {submitting ? "Dispatching..." : "Dispatch Job"}
       </button>

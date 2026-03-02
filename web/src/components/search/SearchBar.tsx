@@ -26,12 +26,12 @@ export function SearchBar({
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder={placeholder}
-        className="flex-1 rounded-lg border border-border px-4 py-2.5 text-sm focus:border-border-focus focus:ring-2 focus:ring-ring-focus focus:outline-none"
+        className="flex-1 rounded-lg border border-border bg-surface px-4 py-2.5 text-sm focus:border-border-focus focus:ring-2 focus:ring-ring-focus focus:outline-none"
       />
       <button
         type="submit"
         disabled={loading || !value.trim()}
-        className="rounded-lg bg-accent px-6 py-2.5 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
+        className="rounded-lg bg-accent px-6 py-2.5 text-sm font-medium text-surface hover:bg-accent-hover disabled:opacity-50"
       >
         {loading ? "Searching..." : "Search"}
       </button>

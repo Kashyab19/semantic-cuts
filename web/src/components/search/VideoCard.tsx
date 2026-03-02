@@ -13,7 +13,7 @@ export function VideoCard({ result, rank }: VideoCardProps) {
     matchPct >= 80 ? "green" : matchPct >= 50 ? "yellow" : "gray";
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-surface-card shadow-sm">
+    <div className="overflow-hidden rounded-lg border border-border bg-surface-card">
       <VideoPlayer src={result.url} startTime={result.timestamp} />
       <div className="flex items-center justify-between px-3 py-2">
         <span className="text-xs text-text-secondary">

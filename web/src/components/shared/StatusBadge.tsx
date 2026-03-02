@@ -4,9 +4,9 @@ interface StatusBadgeProps {
 }
 
 const colors: Record<string, string> = {
-  green: "bg-green-100 text-green-700",
-  yellow: "bg-yellow-100 text-yellow-700",
-  red: "bg-red-100 text-red-700",
+  green: "bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-400",
+  yellow: "bg-yellow-50 text-yellow-700 dark:bg-yellow-950 dark:text-yellow-400",
+  red: "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-400",
   blue: "bg-surface-active text-accent-active-text",
   gray: "bg-surface-hover text-text-secondary",
 };
