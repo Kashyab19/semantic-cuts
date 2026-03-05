@@ -6,7 +6,7 @@ venv/
 .venv/
 env/
 .env
-
+*.db
 
 .DS_Store
 .AppleDouble

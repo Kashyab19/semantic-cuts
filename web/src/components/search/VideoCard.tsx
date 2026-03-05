@@ -1,4 +1,5 @@
 import type { SearchResult } from "../../types";
+import { videoUrl } from "../../api/client";
 import { StatusBadge } from "../shared/StatusBadge";
 import { VideoPlayer } from "../shared/VideoPlayer";
 
@@ -12,9 +13,14 @@ export function VideoCard({ result, rank }: VideoCardProps) {
   const variant =
     matchPct >= 80 ? "green" : matchPct >= 50 ? "yellow" : "gray";
 
+  // Resolve relative video paths against the inference server
+  const src = result.url.startsWith("/")
+    ? videoUrl(result.url)
+    : result.url;
+
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-surface-card">
-      <VideoPlayer src={result.url} startTime={result.timestamp} />
+      <VideoPlayer src={src} startTime={result.timestamp} />
       <div className="flex items-center justify-between px-3 py-2">
         <span className="text-xs text-text-secondary">
           #{rank} &middot; {result.second_formatted}

@@ -19,3 +19,7 @@ export function orchestrator<T>(path: string, init?: RequestInit) {
 export function inference<T>(path: string, init?: RequestInit) {
   return request<T>(INFERENCE_URL, path, init);
 }
+
+export function videoUrl(path: string): string {
+  return `${INFERENCE_URL}${path}`;
+}

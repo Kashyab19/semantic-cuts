@@ -46,6 +46,11 @@ podman-compose up --build # Just trying out Podman for its rootless
 docker-compose down && docker-compose up --build
 # or
 podman-compose down && podman-compose up --build
+
+# or
+make dev          # spin up the backend
+make web          # in another terminal, start the React dev server
+make status 
 ```
 
 This starts all 7 services:

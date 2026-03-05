@@ -112,13 +112,14 @@ def dispatch_job(job):
     # 4. Update Scoreboard (Redis)
     # We set the "Remaining Count" to the number of chunks
     redis_key = f"job:{job_id}:pending"
-    redis_client.set(redis_key, total_chunks)
+    redis_client.setex(redis_key, 86400, total_chunks)  # Expire after 24h
 
     # 5. Dispatch (Fan-Out)
     for i, (start, end) in enumerate(chunks):
         chunk_payload = {
             "job_id": job_id,
-            "video_path": video_path,  # Minions read this local file
+            "url": url,
+            "video_path": video_path,
             "start_time": start,
             "end_time": end,
             "chunk_index": i,
