@@ -8,6 +8,10 @@ env/
 .env
 *.db
 
+
+# reports/
+
+
 .DS_Store
 .AppleDouble
 .LSOverride

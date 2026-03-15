@@ -1,10 +1,11 @@
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 import { Navbar } from "./components/layout/Navbar";
 import { useTheme } from "./hooks/useTheme";
-import { AdminPage } from "./pages/AdminPage";
-import { DashboardPage } from "./pages/DashboardPage";
 import { LandingPage } from "./pages/LandingPage";
 import { SearchPage } from "./pages/SearchPage";
+import { ProcessPage } from "./pages/ProcessPage";
+import { GalleryPage } from "./pages/GalleryPage";
+import { StatsPage } from "./pages/StatsPage";
 
 function LandingLayout() {
   return (
@@ -31,9 +32,10 @@ const router = createBrowserRouter([
   {
     element: <AppLayout />,
     children: [
-      { path: "/playground", element: <SearchPage /> },
-      { path: "/dashboard", element: <DashboardPage /> },
-      { path: "/admin", element: <AdminPage /> },
+      { path: "/search", element: <SearchPage /> },
+      { path: "/process", element: <ProcessPage /> },
+      { path: "/gallery", element: <GalleryPage /> },
+      { path: "/stats", element: <StatsPage /> },
     ],
   },
 ]);

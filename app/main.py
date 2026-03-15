@@ -1,18 +1,24 @@
+import asyncio
 import json
 import os
 import uuid
 import logging
 
+import redis
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from kafka import KafkaProducer
 from pydantic import BaseModel
 
-from app.database import get_all_videos
+from app.database import get_all_videos, get_video
 
 logger = logging.getLogger(__name__)
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9094")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+
+redis_client = redis.Redis(host=REDIS_HOST, port=6379, decode_responses=True)
 
 app = FastAPI()
 
@@ -66,6 +72,49 @@ async def video(payload: VideoRequest):
     except Exception as e:
         logger.error(f"Kafka error for job {job_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to queue video for processing")
+
+
+@app.get("/video/{job_id}/progress")
+async def video_progress(job_id: str):
+    video = get_video(job_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    async def event_stream():
+        while True:
+            video = get_video(job_id)
+            status = video["status"] if video else "unknown"
+
+            total = redis_client.get(f"job:{job_id}:total")
+            pending = redis_client.get(f"job:{job_id}:pending")
+
+            if total is not None and pending is not None:
+                total = int(total)
+                pending = int(pending)
+                progress = round(((total - pending) / total) * 100, 1) if total > 0 else 0
+            else:
+                total = 0
+                pending = 0
+                progress = 100.0 if status == "completed" else 0.0
+
+            event = json.dumps({
+                "status": status,
+                "pending": pending,
+                "total": total,
+                "progress": progress,
+            })
+            yield f"data: {event}\n\n"
+
+            if status in ("completed", "failed"):
+                break
+
+            await asyncio.sleep(1.5)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/videos")

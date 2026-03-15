@@ -107,7 +107,7 @@ export function LandingPage() {
               <ThemeToggleIcon theme={theme} />
             </button>
             <Link
-              to="/playground"
+              to="/search"
               className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-surface transition-colors hover:bg-accent-hover"
             >
               Open Playground
@@ -129,7 +129,7 @@ export function LandingPage() {
         </p>
         <div className="mt-10 flex items-center justify-center gap-4">
           <Link
-            to="/playground"
+            to="/search"
             className="rounded-md bg-accent px-6 py-2.5 text-sm font-medium text-surface transition-colors hover:bg-accent-hover"
           >
             Try the Playground
@@ -165,7 +165,7 @@ export function LandingPage() {
       <section className="border-t border-border bg-surface-card py-16 text-center">
         <h2 className="text-xl font-semibold text-text">Ready to search your videos?</h2>
         <Link
-          to="/playground"
+          to="/search"
           className="mt-6 inline-block rounded-md bg-accent px-6 py-2.5 text-sm font-medium text-surface transition-colors hover:bg-accent-hover"
         >
           Try the Playground

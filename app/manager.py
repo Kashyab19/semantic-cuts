@@ -113,6 +113,7 @@ def dispatch_job(job):
     # We set the "Remaining Count" to the number of chunks
     redis_key = f"job:{job_id}:pending"
     redis_client.setex(redis_key, 86400, total_chunks)  # Expire after 24h
+    redis_client.setex(f"job:{job_id}:total", 86400, total_chunks)
 
     # 5. Dispatch (Fan-Out)
     for i, (start, end) in enumerate(chunks):

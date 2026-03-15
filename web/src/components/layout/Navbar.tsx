@@ -2,9 +2,10 @@ import { NavLink } from "react-router-dom";
 import { useTheme } from "../../hooks/useTheme";
 
 const links = [
-  { to: "/playground", label: "Search" },
-  { to: "/dashboard", label: "Dashboard" },
-  { to: "/admin", label: "Admin" },
+  { to: "/search", label: "Search" },
+  { to: "/process", label: "Process" },
+  { to: "/gallery", label: "Gallery" },
+  { to: "/stats", label: "Stats" },
 ];
 
 function ThemeIcon({ theme }: { theme: "system" | "light" | "dark" }) {

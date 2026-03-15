@@ -31,6 +31,13 @@ export interface DispatchResponse {
   status: string;
 }
 
+export interface JobProgress {
+  status: string;
+  pending: number;
+  total: number;
+  progress: number;
+}
+
 export interface InferenceHealth {
   status: string;
   device: string;

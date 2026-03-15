@@ -41,6 +41,16 @@ def update_status(job_id, status):
     conn.close()
 
 
+def get_video(job_id):
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM videos WHERE id = ?", (job_id,))
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
 def get_all_videos():
     conn = sqlite3.connect(DB_NAME)
     # Return results as a dictionary-like object

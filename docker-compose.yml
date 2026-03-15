@@ -29,9 +29,11 @@ services:
       - .:/app
     environment:
       - KAFKA_BROKER=redpanda:9092
+      - REDIS_HOST=redis
     depends_on:
       - inference
       - redpanda
+      - redis
     restart: always
 
   manager:

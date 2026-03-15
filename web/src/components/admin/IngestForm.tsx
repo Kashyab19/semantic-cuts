@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { dispatchVideo } from "../../api/videos";
 
 interface IngestFormProps {
-  onDispatched?: () => void;
+  onDispatched?: (jobId: string) => void;
 }
 
 export function IngestForm({ onDispatched }: IngestFormProps) {
@@ -21,7 +21,7 @@ export function IngestForm({ onDispatched }: IngestFormProps) {
       const res = await dispatchVideo(url.trim(), userId.trim());
       setStatus({ type: "success", msg: `Job queued: ${res.job_id}` });
       setUrl("");
-      onDispatched?.();
+      onDispatched?.(res.job_id);
     } catch (err) {
       setStatus({
         type: "error",

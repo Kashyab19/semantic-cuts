@@ -11,9 +11,17 @@ QDRANT_HOST = "localhost"
 QDRANT_PORT = 6333
 COLLECTION_NAME = "video_frames"
 
+if torch.cuda.is_available():
+    DEVICE = "cuda"
+elif torch.backends.mps.is_available():
+    DEVICE = "mps"
+else:
+    DEVICE = "cpu"
+logger.info(f"Selected torch device: {DEVICE}")
+
 logger.info("Loading CLIP Model...")
 model_id = "openai/clip-vit-base-patch32"
-model = CLIPModel.from_pretrained(model_id)
+model = CLIPModel.from_pretrained(model_id).to(DEVICE)
 processor = CLIPProcessor.from_pretrained(model_id)
 logger.info("Model Loaded.")
 
@@ -24,7 +32,7 @@ def search_video(query_text):
     print(f"\nSearching for: '{query_text}'...")
 
     # 1. Vectorize Text
-    inputs = processor(text=[query_text], return_tensors="pt", padding=True)
+    inputs = processor(text=[query_text], return_tensors="pt", padding=True).to(DEVICE)
     with torch.no_grad():
         text_features = model.get_text_features(**inputs)
 
