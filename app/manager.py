@@ -2,17 +2,23 @@ import json
 import os
 
 import cv2
-import database
 import redis
 import yt_dlp
+
+import logging
+
+from app import database
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
 from kafka.admin import NewTopic
+
+
+logger = logging.getLogger(__name__)
 
 # --- CONFIG ---
 INGEST_TOPIC = "video_ingestion"
 CHUNK_TOPIC = "chunk_processing"
-KAFKA_BROKER = "127.0.0.1:9094"
-REDIS_HOST = "localhost"
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9094")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = 6379
 
 CHUNK_DURATION = 5  # Seconds per minion
@@ -34,7 +40,7 @@ def setup_topic():
     existing_topics = admin_client.list_topics()
 
     if CHUNK_TOPIC not in existing_topics:
-        print(f"Creating topic '{CHUNK_TOPIC}' with {NUM_PARTITIONS} partitions...")
+        logger.info(f"Creating topic '{CHUNK_TOPIC}' with {NUM_PARTITIONS} partitions...")
         topic_list = [
             NewTopic(
                 name=CHUNK_TOPIC, num_partitions=NUM_PARTITIONS, replication_factor=1
@@ -43,7 +49,7 @@ def setup_topic():
         admin_client.create_topics(new_topics=topic_list, validate_only=False)
     else:
         # Optional: You could check partition count here and increase it,
-        print(f"Topic '{CHUNK_TOPIC}' exists.")
+        logger.info(f"Topic '{CHUNK_TOPIC}' exists.")
 
 
 def download(url, job_id):
@@ -52,10 +58,10 @@ def download(url, job_id):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     if os.path.exists(output_path):
-        print(f" Video already exists, skipping download.")
+        logger.info(f" Video already exists, skipping download.")
         return output_path
 
-    print(f" Downloading {url}...")
+    logger.info(f" Downloading {url}...")
     ydl_opts = {
         "format": "best[ext=mp4]",
         "outtmpl": output_path,
@@ -68,7 +74,7 @@ def download(url, job_id):
             ydl.download([url])
         return output_path
     except Exception as e:
-        print(f" Download failed: {e}")
+        logger.error(f" Download failed: {e}", exc_info=True)
         return None
 
 
@@ -76,7 +82,7 @@ def dispatch_job(job):
     job_id = job["job_id"]
     url = job["url"]
 
-    print(f" Manager: Received Job {job_id}")
+    logger.info(f" Manager: Received Job {job_id}")
 
     database.add_video(job_id, url, title=f"Video {job_id[:8]}")
     # 1. Download (The "Shared Asset")
@@ -91,7 +97,7 @@ def dispatch_job(job):
     duration_sec = total_frames / fps
     cap.release()
 
-    print(f" Duration: {duration_sec:.2f}s | FPS: {fps}")
+    logger.info(f" Duration: {duration_sec:.2f}s | FPS: {fps}")
 
     # 3. Split (The Logic)
     # We chop the video into 30-second tasks
@@ -101,18 +107,19 @@ def dispatch_job(job):
         chunks.append((start, end))
 
     total_chunks = len(chunks)
-    print(f" Slicing into {total_chunks} chunks...")
+    logger.info(f" Slicing into {total_chunks} chunks...")
 
     # 4. Update Scoreboard (Redis)
     # We set the "Remaining Count" to the number of chunks
     redis_key = f"job:{job_id}:pending"
-    redis_client.set(redis_key, total_chunks)
+    redis_client.setex(redis_key, 86400, total_chunks)  # Expire after 24h
 
     # 5. Dispatch (Fan-Out)
     for i, (start, end) in enumerate(chunks):
         chunk_payload = {
             "job_id": job_id,
-            "video_path": video_path,  # Minions read this local file
+            "url": url,
+            "video_path": video_path,
             "start_time": start,
             "end_time": end,
             "chunk_index": i,
@@ -123,11 +130,11 @@ def dispatch_job(job):
     database.update_status(job_id, "processing")
 
     producer.flush()
-    print(f" Dispatched {total_chunks} tasks to '{CHUNK_TOPIC}'")
+    logger.info(f" Dispatched {total_chunks} tasks to '{CHUNK_TOPIC}'")
 
 
 def start_manager():
-    print(f" Manager listening on '{INGEST_TOPIC}'...")
+    logger.info(f" Manager listening on '{INGEST_TOPIC}'...")
 
     setup_topic()
 

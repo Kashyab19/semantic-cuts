@@ -1,17 +1,21 @@
+import logging
+
 import torch
 from qdrant_client import QdrantClient
 from transformers import CLIPModel, CLIPProcessor
+
+logger = logging.getLogger(__name__)
 
 # --- CONFIGURATION ---
 QDRANT_HOST = "localhost"
 QDRANT_PORT = 6333
 COLLECTION_NAME = "video_frames"
 
-print("Loading CLIP Model...")
+logger.info("Loading CLIP Model...")
 model_id = "openai/clip-vit-base-patch32"
 model = CLIPModel.from_pretrained(model_id)
 processor = CLIPProcessor.from_pretrained(model_id)
-print("Model Loaded.")
+logger.info("Model Loaded.")
 
 client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 
@@ -39,7 +43,7 @@ def search_video(query_text):
         )
         hits = search_result.points
     except Exception as e:
-        print(f"Search Error: {e}")
+        logger.error(f"Search error: {e}", exc_info=True)
         return
 
     # 4. Display Results

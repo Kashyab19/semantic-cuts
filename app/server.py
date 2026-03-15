@@ -9,29 +9,32 @@ import numpy as np
 import redis
 import torch
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, File, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, UploadFile, Request
+from fastapi.staticfiles import StaticFiles
 from kafka import KafkaProducer
 from PIL import Image
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from transformers import CLIPModel, CLIPProcessor
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Semantic Cuts - Inference Engine")
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI(title="Semantic Cuts - Your Video Search Engine")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- CONFIGURATION ---
-
-# Detect if running inside Docker or Local
-IN_DOCKER = os.getenv("KUBERNETES_SERVICE_HOST") or os.path.exists("/.dockerenv")
-
-# Define Hostnames
-QDRANT_HOST = "qdrant" if IN_DOCKER else "localhost"
-REDIS_HOST = "redis" if IN_DOCKER else "localhost"
-REDPANDA_HOST = "redpanda" if IN_DOCKER else "localhost"
-REDPANDA_PORT = 9092 if IN_DOCKER else 9094
+QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9094")
 
 COLLECTION_NAME = "video_frames"
 VECTOR_SIZE = 512
@@ -42,28 +45,28 @@ VECTOR_SIZE = 512
 try:
     redis_client = redis.Redis(host=REDIS_HOST, port=6379, db=0)
     redis_client.ping()
-    logger.info(f"Redis connected at {REDIS_HOST}:6379")
+    logger.info(f"Redis connected at {REDIS_HOST}")
 except Exception as e:
-    logger.error(f"Redis connection failed: {e}")
+    logger.error(f"Redis connection failed: {e}", exc_info=True)
     redis_client = None
 
 # Qdrant
 try:
     qdrant_client = QdrantClient(host=QDRANT_HOST, port=6333)
-    logger.info(f"Qdrant connected at {QDRANT_HOST}:6333")
+    logger.info(f"Qdrant connected at {QDRANT_HOST}")
 except Exception as e:
-    logger.error(f"Qdrant connection failed: {e}")
+    logger.error(f"Qdrant connection failed: {e}", exc_info=True)
     qdrant_client = None
 
 # Redpanda (Kafka)
 try:
     producer = KafkaProducer(
-        bootstrap_servers=f"{REDPANDA_HOST}:{REDPANDA_PORT}",
+        bootstrap_servers=KAFKA_BROKER,
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
     )
-    logger.info(f"Redpanda connected at {REDPANDA_HOST}:{REDPANDA_PORT}")
+    logger.info(f"Kafka connected at {KAFKA_BROKER}")
 except Exception as e:
-    logger.error(f"Redpanda connection failed: {e}")
+    logger.error(f"Redpanda connection failed: {e}", exc_info=True)
     producer = None
 
 # --- ML MODEL ---
@@ -73,6 +76,14 @@ logger.info(f"Loading CLIP model on {DEVICE}...")
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(DEVICE)
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 logger.info("Model loaded successfully.")
+
+
+def extract_features(model_output):
+    """Extract the tensor from CLIP model output.
+    transformers 5.x returns BaseModelOutputWithPooling instead of a raw tensor."""
+    if isinstance(model_output, torch.Tensor):
+        return model_output
+    return model_output.pooler_output
 
 
 @app.on_event("startup")
@@ -94,7 +105,7 @@ def startup_event():
         else:
             logger.info(f"Collection {COLLECTION_NAME} already exists.")
     except Exception as e:
-        logger.error(f"Failed to initialize Qdrant: {e}")
+        logger.error(f"Failed to initialize Qdrant: {e}", exc_info=True)
 
 
 def process_video(file_path: str, video_id: str):
@@ -106,7 +117,7 @@ def process_video(file_path: str, video_id: str):
 
     cap = cv2.VideoCapture(file_path)
     if not cap.isOpened():
-        logger.error(f"Could not open video file: {file_path}")
+        logger.error(f"Could not open video file: {file_path}", exc_info=True)
         return
 
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -135,13 +146,15 @@ def process_video(file_path: str, video_id: str):
                     images=pil_image, return_tensors="pt", padding=True
                 ).to(DEVICE)
                 with torch.no_grad():
-                    outputs = model.get_image_features(**inputs)
+                    image_features = extract_features(model.get_image_features(**inputs))
 
-                # Normalize
-                embedding = outputs[0].cpu().numpy()
-                norm = np.linalg.norm(embedding)
-                if norm > 0:
-                    embedding = embedding / norm
+                # Normalize in torch space
+                image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+
+                # Ensure flat 1D vector
+                embedding = image_features.squeeze(0).cpu().numpy()
+                if embedding.ndim > 1:
+                    embedding = embedding[0]
 
                 # Prepare Qdrant Point
                 timestamp = current_frame / fps
@@ -166,7 +179,7 @@ def process_video(file_path: str, video_id: str):
                     )
                 )
             except Exception as e:
-                logger.error(f"Error processing frame {current_frame}: {e}")
+                logger.error(f"Error processing frame {current_frame}: {e}", exc_info=True)
 
         current_frame += 1
 
@@ -182,7 +195,7 @@ def process_video(file_path: str, video_id: str):
                 f"Uploaded {len(points_to_upload)} frames to Qdrant for {video_id}."
             )
         except Exception as e:
-            logger.error(f"Failed to upload to Qdrant: {e}")
+            logger.error(f"Failed to upload to Qdrant: {e}", exc_info=True)
 
     # Cleanup temp file
     try:
@@ -203,7 +216,7 @@ def process_video(file_path: str, video_id: str):
             )
             producer.flush()
         except Exception as e:
-            logger.error(f"Failed to send Kafka message: {e}")
+            logger.error(f"Failed to send Kafka message: {e}", exc_info=True)
 
     logger.info(f"Finished processing video: {video_id}")
 
@@ -219,6 +232,63 @@ def health():
             "redis": "connected" if redis_client else "disconnected",
         },
     }
+
+
+@app.post("/embed")
+async def embed_image(file: UploadFile = File(...)):
+    """Embeds a single image frame and returns the CLIP vector."""
+    try:
+        content = await file.read()
+        nparr = np.frombuffer(content, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb_frame)
+
+        inputs = processor(images=pil_image, return_tensors="pt", padding=True).to(DEVICE)
+        with torch.no_grad():
+            image_features = extract_features(model.get_image_features(**inputs))
+
+        image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+
+        embedding = image_features.squeeze(0).cpu().numpy()
+        if embedding.ndim > 1:
+            embedding = embedding[0]
+
+        return {"vector": embedding.tolist()}
+    except Exception as e:
+        logger.error(f"Embed failed: {e}", exc_info=True)
+        return {"error": "Embedding failed"}
+
+
+@app.post("/embed_batch")
+async def embed_batch(request: Request):
+    """Embeds multiple image frames in a single forward pass. Returns list of CLIP vectors."""
+    try:
+        form = await request.form()
+        files = form.getlist("files")
+
+        if not files:
+            return {"error": "No files provided"}
+
+        pil_images = []
+        for f in files:
+            content = await f.read()
+            nparr = np.frombuffer(content, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_images.append(Image.fromarray(rgb_frame))
+
+        inputs = processor(images=pil_images, return_tensors="pt", padding=True).to(DEVICE)
+        with torch.no_grad():
+            image_features = extract_features(model.get_image_features(**inputs))
+
+        image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
+        embeddings = image_features.cpu().numpy()
+
+        return {"vectors": [emb.tolist() for emb in embeddings]}
+    except Exception as e:
+        logger.error(f"Batch embed failed: {e}", exc_info=True)
+        return {"error": "Batch embedding failed"}
 
 
 @app.post("/ingest")
@@ -249,8 +319,8 @@ async def ingest_video(background_tasks: BackgroundTasks, file: UploadFile = Fil
         }
 
     except Exception as e:
-        logger.error(f"Ingest failed: {e}")
-        return {"error": str(e)}
+        logger.error(f"Ingest failed: {e}", exc_info=True)
+        return {"error": "Video ingestion failed"}
 
 
 @app.get("/search")
@@ -265,9 +335,9 @@ def search_video(query: str, limit: int = 5):
         # 1. Vectorize Text (Using your Torch logic)
         inputs = processor(text=[query], return_tensors="pt", padding=True).to(DEVICE)
         with torch.no_grad():
-            text_features = model.get_text_features(**inputs)
+            text_features = extract_features(model.get_text_features(**inputs))
 
-        # 2. Normalize (Using Torch as per your snippet)
+        # 2. Normalize
         text_vector = text_features[0]
         text_vector = text_vector / text_vector.norm(p=2, dim=-1, keepdim=True)
         text_vector_list = text_vector.cpu().numpy().tolist()
@@ -291,18 +361,38 @@ def search_video(query: str, limit: int = 5):
                 {
                     "score": hit.score,
                     "video_id": payload.get("video_id", "unknown"),
-                    # We save 'timestamp' as a float (e.g., 12.0), so we read that back
                     "timestamp": payload.get("timestamp", 0.0),
                     "frame_index": payload.get("frame_index"),
+                    "url": payload.get("url", ""),
+                    "second_formatted": payload.get("second_formatted", "0:00"),
                 }
             )
 
         return {"query": query, "results": results}
 
     except Exception as e:
-        logger.error(f"Search failed: {e}")
-        return {"error": str(e)}
+        logger.error(f"Search failed: {e}", exc_info=True)
+        return {"error": "Search failed"}
 
+
+@app.get("/stats")
+def stats():
+    if not qdrant_client:
+        return {"error": "Qdrant is not connected"}
+    try:
+        info = qdrant_client.get_collection(COLLECTION_NAME)
+        return {
+            "collection": COLLECTION_NAME,
+            "points_count": info.points_count,
+            "vectors_count": info.vectors_count,
+        }
+    except Exception as e:
+        logger.error(f"Stats failed: {e}", exc_info=True)
+        return {"error": "Failed to retrieve stats"}
+
+
+os.makedirs("assets/videos", exist_ok=True)
+app.mount("/videos", StaticFiles(directory="assets/videos"), name="videos")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001)

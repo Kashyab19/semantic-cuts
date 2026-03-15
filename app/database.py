@@ -47,7 +47,9 @@ def get_all_videos():
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM videos ORDER BY created_at DESC")
-    return c.fetchall()
+    rows = c.fetchall()
+    conn.close()
+    return rows
 
 
 # Initialize immediately when this module is imported
